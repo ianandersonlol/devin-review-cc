@@ -169,3 +169,49 @@ test("a model that returned unparseable text is still rendered in full", () => {
   assert.match(text, /unstructured/i);
   assert.match(text, /no JSON object found/);
 });
+
+test("a panel never drops an unstructured reviewer's text", () => {
+  // Found by the plugin reviewing itself: ok-but-unstructured results fell
+  // between `usable` and `failed`, so the review was printed nowhere at all.
+  const text = renderPanel({
+    results: [
+      result("good", [FINDING]),
+      { model: "prose", ok: true, durationSeconds: 7, className: "ok", report: null,
+        format: "unstructured", review: "CRITICAL: the auth check is inverted" },
+    ],
+    lens: "defect", scope: "s", warnings: [],
+  });
+  assert.match(text, /the auth check is inverted/);
+});
+
+test("an unstructured row is labelled as such, not as a clean 'ok'", () => {
+  const text = renderPanel({
+    results: [{ model: "prose", ok: true, durationSeconds: 7, className: "ok", report: null,
+      review: "some prose" }],
+    lens: "defect", scope: "s", warnings: [],
+  });
+  assert.match(text, /\| `prose` \| unstructured \| see below \|/);
+  assert.ok(!/— \(ok\)/.test(text), "'ok' with no findings reads as a clean review");
+});
+
+test("the corroboration map discloses that unstructured models sat it out", () => {
+  const text = renderPanel({
+    results: [
+      result("good", [FINDING]),
+      { model: "prose", ok: true, durationSeconds: 7, className: "ok", report: null, review: "x" },
+    ],
+    lens: "defect", scope: "s", warnings: [],
+  });
+  assert.match(text, /take no part\s+in this map/);
+});
+
+test("a panel discloses dropped findings per reviewer, as a single report does", () => {
+  const withJunk = normalizeReport({
+    verdict: "REVISE", summary: "", next_steps: [], findings: [FINDING, { severity: "high" }],
+  }, "defect");
+  const text = renderPanel({
+    results: [{ model: "m", ok: true, durationSeconds: 5, className: "ok", report: withJunk }],
+    lens: "defect", scope: "s", warnings: [],
+  });
+  assert.match(text, /1 finding\(s\) from this model were dropped/);
+});

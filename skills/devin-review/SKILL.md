@@ -126,7 +126,13 @@ arithmetically — same file, overlapping line ranges — never by asking a mode
 It splits findings into **corroborated** (more than one model flagged this site)
 and **single-source** (exactly one did). The tolerance is deliberately tight, so
 it will occasionally list one bug as two single-source entries; it will not
-invent agreement that is not there.
+invent agreement that is not there. Findings with no line number are never
+correlated at all — "same file" is not evidence of "same bug" — so they always
+appear as single-source.
+
+A model whose output did not parse takes no part in the map, and the map says so.
+Its review is still printed in full further down: read it, because it may hold
+findings the map does not list.
 
 **It does not synthesize, and that is deliberate.** A fourth model asked to merge
 three reviews has no repository access, cannot check any claim, and reliably

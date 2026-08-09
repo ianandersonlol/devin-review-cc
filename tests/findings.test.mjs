@@ -3,7 +3,9 @@ import test from "node:test";
 
 import {
   correlate,
+  EXAMPLE_PLACEHOLDERS,
   extractJson,
+  isEchoedExample,
   normalizeReport,
   SEVERITIES,
   VERDICTS,
@@ -315,4 +317,110 @@ test("a located and an unlocated finding are not claimed to be the same site", (
     review("b", [{ title: "y", body: "b", severity: "high", file: "a.js" }]),
   ]);
   assert.equal(clusters.length, 2, "unknowable proximity must not become agreement");
+});
+
+// ── decoy resistance ─────────────────────────────────────────────────────────
+//
+// Found by the plugin reviewing itself. Accepting any object that merely parses
+// turns a real review into "No findings reported" — a fabricated clean bill of
+// health, and the worst output a review tool can produce.
+
+test("a decoy object in the preamble does not displace the real report", () => {
+  const text = 'The config {"debug": true} is wrong. ' + JSON.stringify(REPORT);
+  assert.deepEqual(extractJson(text), REPORT);
+});
+
+test("a LONGER decoy fence does not outrank the real report", () => {
+  // The old implementation sorted fences longest-first, so a quoted config
+  // block bigger than the report silently won.
+  const decoy = { some: "x".repeat(500), unrelated: true };
+  const text = "```json\n" + JSON.stringify(decoy) + "\n```\n\n```json\n" + JSON.stringify(REPORT) + "\n```";
+  assert.deepEqual(extractJson(text), REPORT);
+});
+
+test("output containing only non-report JSON is treated as unparseable", () => {
+  // Must return null so the caller falls back to printing the raw text, rather
+  // than manufacturing an empty report.
+  assert.equal(extractJson('{"unrelated": 1}'), null);
+  assert.equal(extractJson('here is a config: {"a": {"b": 2}}'), null);
+});
+
+test("normalizeReport refuses a non-report object at its own entry point", () => {
+  assert.equal(normalizeReport({ unrelated: 1 }, "defect"), null);
+  assert.equal(normalizeReport({ findings: [] }, "defect")?.findings.length, 0);
+});
+
+test("a report is preferred over a bare summary-only object", () => {
+  const bare = { summary: "hmm" };
+  const text = JSON.stringify(bare) + "\n" + JSON.stringify(REPORT);
+  assert.deepEqual(extractJson(text), REPORT);
+});
+
+// ── unlocated findings ───────────────────────────────────────────────────────
+
+test("unlocated findings in one file never corroborate each other", () => {
+  // Found by the plugin reviewing itself. Models omit line numbers routinely,
+  // so grouping on filename alone renders unrelated bugs as "2 models agree" —
+  // fabricating the exact signal correlation exists to detect.
+  const clusters = correlate([
+    review("a", [
+      { title: "auth bug", body: "b", severity: "high", file: "app.js" },
+      { title: "logging bug", body: "b", severity: "low", file: "app.js" },
+    ]),
+    review("b", [{ title: "a third thing", body: "b", severity: "high", file: "app.js" }]),
+  ]);
+  assert.equal(clusters.length, 3, "three unlocated findings are three sites");
+  assert.ok(clusters.every((c) => c.agreement === 1), "none of them is corroboration");
+});
+
+test("a finding located only by line_end counts as located", () => {
+  const clusters = correlate([
+    review("a", [{ title: "x", body: "b", severity: "high", file: "a.js", line_end: 40 }]),
+    review("b", [{ title: "y", body: "b", severity: "high", file: "a.js" }]),
+  ]);
+  assert.equal(clusters.length, 2, "line_end pins it, so it must not join the unlocated pool");
+});
+
+test("an echoed copy of our own schema example never outranks the real report", () => {
+  // Found by the plugin reviewing the parser fix that introduced it: the example
+  // in our prompt has a findings array, so preferring "the first candidate with
+  // findings" handed the reader one placeholder finding and none of the real ones.
+  const echoed = {
+    verdict: "REVISE", summary: EXAMPLE_PLACEHOLDERS.summary,
+    findings: [{ severity: "critical", title: EXAMPLE_PLACEHOLDERS.title, body: "x",
+      file: EXAMPLE_PLACEHOLDERS.file, line_start: 88, line_end: 94, confidence: 0,
+      grounding: "verified", recommendation: "y" }],
+    next_steps: [EXAMPLE_PLACEHOLDERS.nextStep],
+  };
+  const text = "Per the schema:\n```json\n" + JSON.stringify(echoed) +
+    "\n```\nMy review:\n```json\n" + JSON.stringify(REPORT) + "\n```";
+  assert.deepEqual(extractJson(text), REPORT);
+});
+
+test("isEchoedExample needs two markers, so one quoted placeholder is not enough", () => {
+  // A genuine review OF THIS REPO may quote a placeholder while discussing the
+  // prompt; losing that review to over-eager filtering is the worse error.
+  assert.equal(isEchoedExample({ summary: EXAMPLE_PLACEHOLDERS.summary, findings: [] }), false);
+  assert.equal(isEchoedExample({
+    summary: EXAMPLE_PLACEHOLDERS.summary, findings: [{ title: EXAMPLE_PLACEHOLDERS.title }],
+  }), true);
+});
+
+test("the richer report wins when two genuine candidates are present", () => {
+  const thin = { verdict: "SHIP", summary: "nothing here", findings: [] };
+  const text = JSON.stringify(REPORT) + "\n" + JSON.stringify(thin);
+  assert.equal(extractJson(text).findings.length, 1, "must not prefer the empty one");
+});
+
+test("a broad whole-file finding does not become an over-merge net", () => {
+  // "No tests cover any of this, lines 1-200" overlaps everything in the file.
+  const clusters = correlate([
+    review("a", [
+      { title: "no tests anywhere", body: "b", severity: "medium", file: "app.js", line_start: 1, line_end: 200 },
+      { title: "auth bug", body: "b", severity: "high", file: "app.js", line_start: 20, line_end: 22 },
+    ]),
+    review("b", [{ title: "logging bug", body: "b", severity: "low", file: "app.js", line_start: 150, line_end: 152 }]),
+  ]);
+  assert.equal(clusters.length, 3, "the broad finding must stand alone");
+  assert.ok(clusters.every((c) => c.agreement === 1), "and must not fabricate agreement");
 });

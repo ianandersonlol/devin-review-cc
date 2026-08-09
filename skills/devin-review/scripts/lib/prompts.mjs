@@ -5,6 +5,8 @@
 // verdict vocabulary. Keeping the verdict words disjoint means a panel
 // transcript containing both lenses can never confuse which produced which.
 
+import { EXAMPLE_PLACEHOLDERS } from "./findings.mjs";
+
 /**
  * Why this section is worded so insistently about the shell:
  *
@@ -51,6 +53,7 @@ away. Everything you need is reachable by reading and searching files.`;
  * its review printed; it just does not get correlated.
  */
 function OUTPUT_CONTRACT({ verdicts, verdictGuide, bodyGuide, recommendationGuide, severityGuide }) {
+  const ph = EXAMPLE_PLACEHOLDERS;
   return `## Output format — JSON only
 
 Return ONE JSON object and nothing else. No preamble, no explanation around it,
@@ -59,13 +62,13 @@ no markdown outside it. If you wrap it in a fence, use \`\`\`json.
 \`\`\`json
 {
   "verdict": ${verdicts.map((v) => `"${v}"`).join(" | ")},
-  "summary": "A terse ship/no-ship assessment, not a neutral recap of the diff.",
+  "summary": "${ph.summary}",
   "findings": [
     {
       "severity": "critical" | "high" | "medium" | "low",
-      "title": "One line stating the claim itself, not the topic.",
+      "title": "${ph.title}",
       "body": "${bodyGuide.replace(/\n/g, " ")}",
-      "file": "path/relative/to/repo/root.ext",
+      "file": "${ph.file}",
       "line_start": 88,
       "line_end": 94,
       "confidence": 0.0,
@@ -73,7 +76,7 @@ no markdown outside it. If you wrap it in a fence, use \`\`\`json.
       "recommendation": "${recommendationGuide}"
     }
   ],
-  "next_steps": ["What the author should do first."]
+  "next_steps": ["${ph.nextStep}"]
 }
 \`\`\`
 

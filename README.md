@@ -69,7 +69,9 @@ Each is either the sharpest finding in the set or a hallucination.
 ```
 
 That map is computed arithmetically — same file, overlapping line ranges — never
-by asking a model. **The panel does not merge or summarise the reviews, on
+by asking a model, and it is tuned to under-merge. Fabricating agreement would
+forge the one signal a panel exists to produce, so a finding with no line number
+is never correlated at all: "same file" is not evidence of "same bug". **The panel does not merge or summarise the reviews, on
 purpose.** Handing three reviews to a fourth model and asking for "the consensus"
 produces a reviewer with no repository access, no ability to check any claim, and
 a strong bias toward whatever was phrased most confidently. It would launder
@@ -140,7 +142,8 @@ different output contracts. Both work with `--panel`.
 | Question | What is **wrong** with this? | Is this the **right shape**? |
 | Assumes | design is settled | code works, tests pass |
 | Looks for | correctness, edge cases, error handling, concurrency, data loss, auth, contract breaks | load-bearing assumptions, the alternative not taken, behaviour under scale and partial failure, what it locks in, fit with the existing codebase |
-| Output | `### HIGH <claim>` + Where / Failure / Confirmed / Fix | `### CHALLENGE <claim>` + Assumption / Breaks when / Confirmed / Alternative |
+| `body` holds | a concrete failure: inputs, then the wrong result | the assumption, and the condition under which it breaks |
+| `recommendation` holds | the smallest safe fix | the alternative approach, and what it costs |
 | Verdict | SHIP · REVISE · RETHINK | SOUND · RECONSIDER · WRONG-SHAPE |
 
 The verdict vocabularies are deliberately disjoint: a transcript can contain both

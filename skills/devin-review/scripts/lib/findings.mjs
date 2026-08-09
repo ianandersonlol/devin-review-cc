@@ -13,6 +13,20 @@
 // sort, filter and correlate on.
 
 export const SEVERITIES = ["critical", "high", "medium", "low"];
+
+/**
+ * The placeholder strings used in the schema example shown to the model.
+ *
+ * Defined here, and imported by prompts.mjs, so the example and the detector
+ * that recognises an echo of it cannot drift apart. Changing the wording in one
+ * place without the other would quietly disable the protection below.
+ */
+export const EXAMPLE_PLACEHOLDERS = {
+  summary: "A terse ship/no-ship assessment, not a neutral recap of the diff.",
+  title: "One line stating the claim itself, not the topic.",
+  file: "path/relative/to/repo/root.ext",
+  nextStep: "What the author should do first.",
+};
 export const GROUNDINGS = ["verified", "inferred"];
 
 /**
@@ -62,27 +76,85 @@ export function schemaFor(lens) {
 export function extractJson(text) {
   if (!text) return null;
 
-  // Prefer a fenced block: it is the least ambiguous signal, and picking the
-  // longest guards against a model illustrating a snippet before the real one.
-  const fences = [...text.matchAll(/```(?:json)?\s*\n([\s\S]*?)```/gi)]
-    .map((match) => match[1].trim())
-    .filter(Boolean)
-    .sort((a, b) => b.length - a.length);
-  for (const candidate of fences) {
-    const parsed = tryParse(candidate);
-    if (parsed) return parsed;
+  const candidates = [];
+
+  // Fenced blocks first: the least ambiguous signal a model can give.
+  for (const match of text.matchAll(/```(?:json)?\s*\n([\s\S]*?)```/gi)) {
+    const parsed = tryParse(match[1].trim());
+    if (parsed) candidates.push(parsed);
   }
 
-  // Otherwise scan for a balanced top-level object, string-aware so a brace
-  // inside a prose body cannot end the scan early.
+  // Then any balanced top-level object, string-aware so a brace inside a prose
+  // body cannot end the scan early.
   for (let i = 0; i < text.length; i += 1) {
     if (text[i] !== "{") continue;
     const slice = balancedObject(text, i);
     if (!slice) continue;
     const parsed = tryParse(slice);
-    if (parsed) return parsed;
+    if (parsed) candidates.push(parsed);
   }
-  return null;
+
+  // Shape decides, not position or size.
+  //
+  // Taking the first — or the longest — object that merely *parses* is how a
+  // review turns into a lie. A model that quotes a config snippet before its
+  // report, or writes `the object {"debug": true} is wrong` in a preamble, hands
+  // us a decoy; accepting it yields a report with no verdict and no findings,
+  // which renders as "No findings reported" and is indistinguishable from a
+  // genuine all-clear. A review tool inventing a clean bill of health is the
+  // worst output it can produce, so anything not shaped like a report is passed
+  // over, and if nothing is shaped like one we return null and the caller falls
+  // back to printing the raw text.
+  const reports = candidates.filter(looksLikeReport).filter((c) => !isEchoedExample(c));
+  if (reports.length === 0) return null;
+
+  // Among genuine candidates, prefer the one carrying the most findings, and on
+  // a tie the later one, since a model's real answer follows its preamble.
+  //
+  // "Most findings" rather than "first" is chosen against the failure that
+  // actually costs something: showing fewer findings than were reported reads as
+  // a clean bill of health, while showing a spurious extra one merely wastes a
+  // reader's time.
+  let best = null;
+  for (const report of reports) {
+    const count = Array.isArray(report.findings) ? report.findings.length : -1;
+    if (best === null || count >= best.count) best = { report, count };
+  }
+  return best.report;
+}
+
+/**
+ * Is this candidate the schema example from our own prompt, handed back to us?
+ *
+ * Models asked for JSON sometimes restate the template before answering. That
+ * echo is shaped exactly like a report and carries a findings array, so without
+ * this it outranks the real review — the reader then sees one placeholder
+ * "finding" reading "One line stating the claim itself" and none of the real
+ * ones. Found by this plugin reviewing its own parser.
+ *
+ * Two matches are required rather than one: a genuine review *of this
+ * repository* may legitimately quote a single placeholder while discussing the
+ * prompt, and losing a real review to over-eager filtering would be the worse
+ * error.
+ */
+export function isEchoedExample(candidate) {
+  const text = JSON.stringify(candidate);
+  const hits = Object.values(EXAMPLE_PLACEHOLDERS).filter((marker) => text.includes(marker));
+  return hits.length >= 2;
+}
+
+/**
+ * Does this object claim to be a review report?
+ *
+ * Deliberately generous — one recognised key is enough — because the job here is
+ * only to tell a report apart from an unrelated object that happened to be
+ * nearby, not to validate it. normalizeReport does the validating.
+ */
+export function looksLikeReport(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return Array.isArray(value.findings) ||
+    typeof value.verdict === "string" ||
+    typeof value.summary === "string";
 }
 
 function tryParse(candidate) {
@@ -126,7 +198,9 @@ function balancedObject(text, start) {
  * findings to one malformed sibling is the worst possible trade.
  */
 export function normalizeReport(raw, lens) {
-  if (!raw || typeof raw !== "object") return null;
+  // Guarded here as well as in extractJson: both are entry points, and a
+  // fabricated "no findings" is the one output this tool must never produce.
+  if (!looksLikeReport(raw)) return null;
 
   const allowed = VERDICTS[lens] ?? [];
   const verdictRaw = typeof raw.verdict === "string" ? raw.verdict.trim().toUpperCase() : "";
@@ -177,8 +251,11 @@ function normalizeFinding(raw) {
   const groundingRaw = str(raw.grounding).toLowerCase();
   const grounding = GROUNDINGS.includes(groundingRaw) ? groundingRaw : "inferred";
 
-  const lineStart = int(raw.line_start);
+  // A finding carrying only `line_end` is still located; treating it as
+  // unlocated would drop it into the unlocated pool, which has different and
+  // much weaker correlation rules.
   const lineEnd = int(raw.line_end);
+  const lineStart = int(raw.line_start) ?? lineEnd;
 
   return {
     severity,
@@ -253,6 +330,15 @@ function confidence(value) {
  */
 const TOUCH_TOLERANCE = 1;
 
+/**
+ * A finding spanning more lines than this is about the file, not about a site.
+ *
+ * "No tests cover any of this, lines 1-200" overlaps every other finding in the
+ * file, so letting it cluster would sweep unrelated bugs into one entry and
+ * report them as corroborated. Broad findings therefore stand alone.
+ */
+const BROAD_SPAN = 60;
+
 export function correlate(reviews) {
   const clusters = [];
 
@@ -293,17 +379,25 @@ function sameSite(cluster, finding) {
   if (!cluster.file || !finding.file) return false;
   if (normalizePath(cluster.file) !== normalizePath(finding.file)) return false;
 
-  const hasClusterLines = cluster.lineStart !== null;
-  const hasFindingLines = finding.line_start !== null;
-  // Two unlocated findings in one file are as close as they can be shown to be.
-  if (!hasClusterLines && !hasFindingLines) return true;
-  // One located and one not is unknowable. Claiming they are the same site
-  // would be inventing the agreement, so they stay apart.
-  if (!hasClusterLines || !hasFindingLines) return false;
+  // An unlocated finding never joins anything, in either direction.
+  //
+  // Grouping two of them because they name the same file looks harmless and is
+  // not: models omit line numbers routinely, so an auth bug and a logging bug
+  // reported without lines in the same file would be rendered as "2 models
+  // agree" — fabricating precisely the signal this function exists to detect.
+  // "Same file" is not evidence of "same bug".
+  if (cluster.lineStart === null || finding.line_start === null) return false;
 
   const findingEnd = finding.line_end ?? finding.line_start;
+  if (span(cluster.lineStart, cluster.lineEnd) > BROAD_SPAN) return false;
+  if (span(finding.line_start, findingEnd) > BROAD_SPAN) return false;
+
   const gap = Math.max(cluster.lineStart - findingEnd, finding.line_start - cluster.lineEnd);
   return gap <= TOUCH_TOLERANCE;
+}
+
+function span(start, end) {
+  return Math.abs((end ?? start) - start) + 1;
 }
 
 function normalizePath(file) {

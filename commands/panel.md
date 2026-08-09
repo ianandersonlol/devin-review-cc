@@ -54,7 +54,10 @@ once (default 3).
    - **Look hardest at the "Single-source" list.** Each is either the sharpest
      finding in the set or a hallucination; check it against real code and say
      which. Note that correlation is arithmetic and errs toward splitting, so
-     two single-source entries at nearby lines may be one bug described twice.
+     two single-source entries at nearby lines may be one bug described twice,
+     and findings with no line number are never correlated at all.
+   - **Read any "unstructured" reviewer in full.** Its output did not parse, so
+     it sat out the correlation map entirely — its findings are not in there.
    - **Check `grounding` before repeating a claim.** `inferred` means the model
      reasoned from the diff without opening the call sites.
    - **Where they contradict each other, read the code and say who was right.**

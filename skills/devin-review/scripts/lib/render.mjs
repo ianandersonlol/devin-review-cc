@@ -104,7 +104,14 @@ export function summariseSeverities(findings) {
  * Everything else is evidence behind those.
  */
 export function renderPanel({ results, lens, scope, warnings }) {
+  // Three buckets, and every result lands in exactly one of them. An earlier
+  // version had only `usable` (ok with a report) and `failed` (not ok), which
+  // left ok-but-unstructured results in neither — so a model that answered in
+  // prose was shown as "— (ok)" in the table and its review was then printed
+  // nowhere at all. That silently discarded a review the user had paid for, and
+  // contradicted interpret()'s own guarantee that unparseable output is kept.
   const usable = results.filter((r) => r.ok && r.report);
+  const unstructured = results.filter((r) => r.ok && !r.report);
   const failed = results.filter((r) => !r.ok);
   const out = [];
 
@@ -116,7 +123,13 @@ export function renderPanel({ results, lens, scope, warnings }) {
   out.push("| Model | Verdict | Findings | Time |");
   out.push("| --- | --- | --- | --- |");
   for (const result of results) {
-    if (!result.ok || !result.report) {
+    if (result.ok && !result.report) {
+      // Not "— (ok)", which reads as "ran fine, found nothing". There IS a
+      // review below; it just could not be parsed into findings.
+      out.push(`| \`${result.model}\` | unstructured | see below | ${result.durationSeconds}s |`);
+      continue;
+    }
+    if (!result.ok) {
       out.push(`| \`${result.model}\` | — (${result.className}) | — | ${result.durationSeconds}s |`);
       continue;
     }
@@ -150,6 +163,14 @@ export function renderPanel({ results, lens, scope, warnings }) {
   if (clusters.length > 0) {
     out.push("## Where to look first");
     out.push("");
+    if (unstructured.length > 0) {
+      out.push(
+        `_Note: ${unstructured.length} model(s) returned unparseable output and take no part ` +
+          "in this map. Their reviews are printed in full below and may contain findings not " +
+          "listed here._",
+      );
+      out.push("");
+    }
     if (corroborated.length > 0) {
       out.push(`**Corroborated — ${corroborated.length} site(s) flagged by more than one model.**`);
       out.push("Independent agreement across labs is the strongest signal here.");
@@ -196,6 +217,17 @@ export function renderPanel({ results, lens, scope, warnings }) {
     out.push("");
   }
 
+  for (const result of unstructured) {
+    out.push("---");
+    out.push("");
+    out.push(renderUnstructured({
+      text: result.review,
+      model: result.model,
+      reason: result.reason || "output did not parse as a structured report",
+      durationSeconds: result.durationSeconds,
+    }));
+  }
+
   for (const result of usable) {
     out.push("---");
     out.push("");
@@ -217,6 +249,15 @@ export function renderPanel({ results, lens, scope, warnings }) {
       out.push("**Next steps:** " + result.report.next_steps.join("; "));
       out.push("");
     }
+    // Disclosed per reviewer, exactly as a single report does. A panel hiding
+    // what it could not read would be the same omission in a busier page.
+    if (result.report.droppedFindings > 0) {
+      out.push(
+        `_${result.report.droppedFindings} finding(s) from this model were dropped as ` +
+          "unreadable. Re-run with --json to inspect the raw output._",
+        "",
+      );
+    }
   }
 
   return out.join("\n");
@@ -229,9 +270,9 @@ export function renderPanel({ results, lens, scope, warnings }) {
  * read is still a review a person or an agent can read, and silently dropping it
  * would be a far worse failure than printing it with a caveat.
  */
-export function renderUnstructured({ text, model, reason }) {
+export function renderUnstructured({ text, model, reason, durationSeconds }) {
   return [
-    `# Review — \`${model}\` (unstructured)`,
+    `## Reviewer: \`${model}\` — unstructured${durationSeconds ? `  _(${durationSeconds}s)_` : ""}`,
     "",
     `_This model did not return a readable structured report (${reason}), so its raw output ` +
       "follows verbatim. Findings are not addressable and were not correlated._",
