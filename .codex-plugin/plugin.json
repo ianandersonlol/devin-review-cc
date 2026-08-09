@@ -1,0 +1,39 @@
+{
+  "name": "devin",
+  "version": "1.0.0",
+  "description": "Adversarial code review via the Devin CLI. Runs your choice of frontier model read-only against your actual repo — or several of them in parallel, so you get genuinely independent opinions instead of one.",
+  "author": {
+    "name": "Ian Anderson",
+    "url": "https://github.com/ianandersonlol"
+  },
+  "homepage": "https://github.com/ianandersonlol/devin-review-cc",
+  "license": "MIT",
+  "keywords": [
+    "devin",
+    "cognition",
+    "review",
+    "adversarial",
+    "second-opinion",
+    "multi-model",
+    "panel"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "devin review",
+    "shortDescription": "Adversarial review from one model, or a parallel panel of several",
+    "longDescription": "Delegates adversarial review of your current diff to the Devin CLI, which fronts models from Cognition, OpenAI, Moonshot, Zhipu and others behind one binary. The reviewer runs read-only but with read access to the whole repository, so it greps for call sites and verifies findings against real code instead of critiquing a pasted diff. Because one CLI reaches many vendors, `panel` runs several models over the same diff in parallel and reports each separately — disagreement between them is the most useful signal it produces. Includes a credential pre-flight, since the diff leaves your machine.",
+    "developerName": "Ian Anderson",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/ianandersonlol/devin-review-cc",
+    "defaultPrompt": [
+      "Get an adversarial review of my current diff with devin",
+      "Run a multi-model panel review on this change before I merge it",
+      "Ask devin to challenge the design of this change, not just the bugs",
+      "Review the staged changes with devin, focusing on auth"
+    ]
+  }
+}

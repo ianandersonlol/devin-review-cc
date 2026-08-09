@@ -1,0 +1,32 @@
+{
+  "name": "devin",
+  "version": "1.0.0",
+  "description": "Adversarial code review via the Devin CLI. Runs your choice of frontier model read-only against your actual repo — or several of them in parallel, so you get genuinely independent opinions instead of one.",
+  "author": {
+    "name": "Ian Anderson",
+    "url": "https://github.com/ianandersonlol"
+  },
+  "license": "MIT",
+  "keywords": [
+    "devin",
+    "cognition",
+    "review",
+    "adversarial",
+    "second-opinion",
+    "multi-model",
+    "panel"
+  ],
+  "commands": [
+    "./commands/review.md",
+    "./commands/panel.md",
+    "./commands/challenge.md",
+    "./commands/rescue.md",
+    "./commands/models.md",
+    "./commands/setup.md",
+    "./commands/status.md"
+  ],
+  "homepage": "https://github.com/ianandersonlol/devin-review-cc",
+  "skills": [
+    "./skills/devin-review"
+  ]
+}

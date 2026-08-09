@@ -1,0 +1,75 @@
+---
+description: Adversarial review of your working diff via the Devin CLI with real repo access
+argument-hint: [--base REF] [--staged] [--uncommitted] [--focus "TEXT"] [--model ID] [-- paths...]
+allowed-tools: Bash(node:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git diff --stat:*), AskUserQuestion
+---
+
+Get an independent adversarial review of the current change from a model that is
+not you, via the Devin CLI. The reviewer runs **read-only** and non-interactively
+but has **read access to the whole repository**, so it verifies findings against
+real code and call sites instead of guessing from the diff.
+
+This is the **defect lens**: it hunts for what is broken. To challenge the design
+and approach instead, use `/devin:challenge`. To get several models' opinions at
+once, use `/devin:panel`.
+
+Arguments: $ARGUMENTS
+
+## Steps
+
+1. Run the review. Pass `$ARGUMENTS` straight through — the script parses them:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/skills/devin-review/scripts/devin-review.mjs" review $ARGUMENTS
+```
+
+2. Interpret the exit code before anything else:
+   - **0** — review printed. Continue to step 3.
+   - **4** — blocked by the secret-shape scan. Do NOT rerun with
+     `--allow-secrets` on your own initiative. Show the user which lines matched
+     and ask whether to scope the review to safe paths or waive the scan.
+   - **3** — no review was produced. The message names the class. The one worth
+     understanding is **`blocked_tool`**: the model reached for a tool it is not
+     allowed (nearly always a shell command), and Devin ends the turn without
+     printing anything when there is no human to approve it. Nothing was written
+     to the repo. A single retry usually succeeds, and a narrower `--focus`
+     makes it less likely. `quota` means the account is out of budget for that
+     model — retrying will not help, but a free model (`swe-1-7`, `glm-5-2`)
+     will. `auth` means `devin auth login`.
+   - **2** — setup problem (not a git repo, bad ref, unknown model, devin
+     missing). Suggest `/devin:setup`, which diagnoses exactly what is wrong.
+   - **6** — the repository declares Devin lifecycle **hooks**. Devin runs these
+     as shell commands at session start, before the model acts and regardless of
+     which tools it is allowed, so they sit outside the read-only guarantee. The
+     output names the files and events found. `--allow-hooks` overrides it, but
+     that is the **user's call, not yours** — show them what was found and ask.
+     Their own repo with their own hooks is usually fine; a fork or someone
+     else's branch is exactly why the check exists.
+   - anything else — surface Devin's stderr verbatim.
+
+3. Present the review to the user **verbatim first**, unedited. Do not soften,
+   filter, or reorder the findings. This is the whole point of a second opinion.
+
+4. Then add your own short assessment underneath, clearly separated. For each
+   finding, say whether you **agree**, **disagree**, or **need to check** — and
+   where you disagree, say why, citing the code. The reviewer cannot see this
+   conversation and does not know the constraints we've discussed, so some
+   findings will be context-blind. Flag those explicitly rather than silently
+   dropping them.
+
+5. Do not start fixing anything unless the user asks. Report, then wait.
+
+## Notes
+
+- Default scope is the working tree vs the merge-base with `origin/HEAD`/`main`/
+  `master`, so committed-on-branch **and** uncommitted work are reviewed together.
+- The default model is `swe-1-7`: free, fast, and from Cognition rather than
+  Anthropic. Escalate with `--model` when the change is genuinely risky —
+  `/devin:models` lists what the account can use, with prices.
+- **Do not pick a `claude-*` model.** It correlates with you, so it is not an
+  independent voice; the script warns when you do. Prefer a different lab.
+- **This command is one voice.** For several, use `/devin:panel`, which is the
+  feature this plugin exists for. For a cross-tool council, run this alongside
+  the agy (Gemini) and Codex (GPT) plugins and reconcile the results yourself.
+- Paid models consume Devin usage quota; free models do not. `--dry-run` shows
+  exactly what would be sent and spends nothing.

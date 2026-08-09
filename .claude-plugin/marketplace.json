@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "devin-review-cc",
+  "description": "Adversarial code review via the Devin CLI, with real repository access and parallel multi-model panels.",
+  "owner": {
+    "name": "Ian Anderson",
+    "url": "https://github.com/ianandersonlol"
+  },
+  "plugins": [
+    {
+      "name": "devin",
+      "description": "Adversarial code review via the Devin CLI, with real repo access and multi-model panels.",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}
