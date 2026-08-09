@@ -46,10 +46,10 @@ import { buildRequest, buildRescueRequest } from "./lib/prompts.mjs";
 import {
   diversityWarnings,
   estimateCost,
-  formatPanel,
   interpret,
   runPanel,
 } from "./lib/panel.mjs";
+import { renderPanel, renderReport, renderUnstructured } from "./lib/render.mjs";
 import { scanForSecrets } from "./lib/secrets.mjs";
 import { createTempDir, removeTempDir } from "./lib/tempdir.mjs";
 
@@ -126,10 +126,10 @@ async function main() {
 /**
  * One code path serves a single reviewer and a panel.
  *
- * A single review is a panel of one, but it is NOT formatted as one: the output
- * is the model's review verbatim, exactly as agy-review and the Codex plugin
- * emit it, because a summary table above a single opinion is noise. The panel
- * report shape appears only when there is genuinely something to compare.
+ * Both render from the same validated structure; they differ only in what there
+ * is to say about it. A single review gets its findings listed; a panel
+ * additionally gets the corroboration map, which is the one thing several
+ * reviewers can tell you that one cannot.
  */
 async function commandReview(options) {
   const gitPath = await findGit();
@@ -290,7 +290,7 @@ async function commandReview(options) {
         model: options.models[0],
         timeoutMs: options.timeoutMs,
       });
-      const interpreted = interpret(result, root, { keepLinks: options.keepLinks });
+      const interpreted = interpret(result, root, { keepLinks: options.keepLinks, lens: options.lens });
 
       if (!interpreted.ok) {
         log(`no review produced [${interpreted.className}]: ${interpreted.reason}`);
@@ -303,8 +303,39 @@ async function commandReview(options) {
         return interpreted.className === "exit_error" ? (result.code || 1) : 3;
       }
 
-      process.stdout.write(`${interpreted.review}\n`);
-      if (!options.quiet) log(`completed in ${interpreted.durationSeconds}s`);
+      // --json is available on every review path, not just the panel: the
+      // primary consumer is an agent, and a tool whose output shape depends on
+      // how many models you asked for is a tool that needs special-casing.
+      if (options.json) {
+        process.stdout.write(`${JSON.stringify({
+          lens: options.lens,
+          scope: diff.description,
+          results: [interpreted],
+        }, null, 2)}\n`);
+        return 0;
+      }
+
+      process.stdout.write(
+        `${interpreted.report
+          ? renderReport({
+              report: interpreted.report,
+              model: interpreted.model,
+              lens: options.lens,
+              scope: diff.description,
+              durationSeconds: interpreted.durationSeconds,
+            })
+          : renderUnstructured({
+              text: interpreted.review,
+              model: interpreted.model,
+              reason: interpreted.reason,
+            })}\n`,
+      );
+      if (!options.quiet) {
+        log(`completed in ${interpreted.durationSeconds}s (${interpreted.format})`);
+        if (interpreted.format === "unstructured") {
+          log("NOTE: this model did not return parseable JSON; findings are not addressable.");
+        }
+      }
       return 0;
     }
 
@@ -320,11 +351,13 @@ async function commandReview(options) {
       concurrency: options.concurrency,
       timeoutMs: options.timeoutMs,
       keepLinks: options.keepLinks,
+      lens: options.lens,
       onFinish: (result) => {
         if (options.quiet) return;
         log(
           result.ok
-            ? `  ${result.model} finished in ${result.durationSeconds}s`
+            ? `  ${result.model} finished in ${result.durationSeconds}s ` +
+              `(${result.report ? `${result.report.findings.length} findings` : "unstructured"})`
             : `  ${result.model} produced nothing [${result.className}]`,
         );
       },
@@ -343,7 +376,7 @@ async function commandReview(options) {
     }
 
     process.stdout.write(
-      `${formatPanel({ results, lens: options.lens, scope: diff.description, warnings })}\n`,
+      `${renderPanel({ results, lens: options.lens, scope: diff.description, warnings })}\n`,
     );
     return 0;
   } finally {
@@ -519,7 +552,10 @@ async function commandRescue(options) {
       process.stdout.write(block.join("\n"));
     };
 
-    const interpreted = interpret(result, root, { keepLinks: options.keepLinks });
+    // Rescue is deliberately NOT on the findings schema: its output is a
+    // narrative of what was done and why, which does not decompose into
+    // addressable claims about code the way a review does.
+    const interpreted = interpret(result, root, { keepLinks: options.keepLinks, lens: "none" });
 
     if (!interpreted.ok) {
       log(`no report produced [${interpreted.className}]: ${interpreted.reason}`);

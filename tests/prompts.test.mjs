@@ -85,8 +85,33 @@ test("the reviewer is told to verify against real code, not just the hunks", () 
 
 test("both lenses forbid inventing findings to look thorough", () => {
   for (const lens of ["defect", "design"]) {
-    assert.match(buildRequest({ ...base, lens }), /do not (invent|manufacture)/i);
+    const request = buildRequest({ ...base, lens });
+    assert.match(request, /inventing findings to look\s+thorough is not/i);
+    assert.match(request, /Never invent a file, a line, a call path/i);
   }
+});
+
+test("both lenses ask for JSON and show the findings schema", () => {
+  for (const lens of ["defect", "design"]) {
+    const request = buildRequest({ ...base, lens });
+    assert.match(request, /Return ONE JSON object and nothing else/);
+    for (const field of ["severity", "title", "body", "file", "line_start",
+      "confidence", "grounding", "recommendation"]) {
+      assert.match(request, new RegExp(`"${field}"`), `${lens} schema should show ${field}`);
+    }
+  }
+});
+
+test("the grounding field is explained in terms of what the reader does with it", () => {
+  // A false `verified` sends the reader straight past the thing that was wrong,
+  // so the prompt has to say why it matters, not just what the values are.
+  assert.match(buildRequest(base), /false `verified` sends them past/i);
+});
+
+test("each lens shows only its own verdict vocabulary", () => {
+  assert.match(buildRequest({ ...base, lens: "defect" }), /"SHIP" \| "REVISE" \| "RETHINK"/);
+  assert.ok(!buildRequest({ ...base, lens: "defect" }).includes('"SOUND"'));
+  assert.match(buildRequest({ ...base, lens: "design" }), /"SOUND" \| "RECONSIDER" \| "WRONG-SHAPE"/);
 });
 
 // ── rescue ───────────────────────────────────────────────────────────────────

@@ -38,6 +38,71 @@ run commands, edit files, or write anything — not even to scratch space. If yo
 call a denied tool, your turn ends immediately and your entire review is thrown
 away. Everything you need is reachable by reading and searching files.`;
 
+/**
+ * The structured output contract.
+ *
+ * Only the envelope is structured. `body` and `recommendation` are free prose
+ * with no shape imposed on them, because constraining a reviewer's *argument*
+ * to a schema reliably makes the argument worse — the fields exist so findings
+ * can be sorted, addressed and correlated, not to discipline the thinking.
+ *
+ * Devin cannot enforce a schema the way the Codex CLI can, so this asks firmly
+ * and the parser is forgiving. A model that answers in prose anyway still gets
+ * its review printed; it just does not get correlated.
+ */
+function OUTPUT_CONTRACT({ verdicts, verdictGuide, bodyGuide, recommendationGuide, severityGuide }) {
+  return `## Output format — JSON only
+
+Return ONE JSON object and nothing else. No preamble, no explanation around it,
+no markdown outside it. If you wrap it in a fence, use \`\`\`json.
+
+\`\`\`json
+{
+  "verdict": ${verdicts.map((v) => `"${v}"`).join(" | ")},
+  "summary": "A terse ship/no-ship assessment, not a neutral recap of the diff.",
+  "findings": [
+    {
+      "severity": "critical" | "high" | "medium" | "low",
+      "title": "One line stating the claim itself, not the topic.",
+      "body": "${bodyGuide.replace(/\n/g, " ")}",
+      "file": "path/relative/to/repo/root.ext",
+      "line_start": 88,
+      "line_end": 94,
+      "confidence": 0.0,
+      "grounding": "verified" | "inferred",
+      "recommendation": "${recommendationGuide}"
+    }
+  ],
+  "next_steps": ["What the author should do first."]
+}
+\`\`\`
+
+### Field rules
+
+- **verdict.** ${verdictGuide}
+- **severity.** ${severityGuide ?? "How costly this is if it goes wrong in production."}
+- **file / line_start / line_end.** Point at the code you are actually talking
+  about. A finding nobody can locate cannot be checked, and will be discarded.
+- **grounding.** \`verified\` ONLY if you opened the surrounding code and its
+  call sites and established this. \`inferred\` if you reasoned from the diff.
+  Guessing here is worse than useless: the reader uses this to decide what to
+  re-check, so a false \`verified\` sends them past the thing that was wrong.
+- **confidence.** 0 to 1, and honest. Do not cluster everything at 0.9. If a
+  conclusion rests on an inference, say so in the body and lower the number.
+
+### Bar for a finding
+
+Report only material findings. No style, naming, or cleanup notes; no
+speculation you cannot tie to a code path. Prefer one strong finding over
+several weak ones, and do not pad. If you genuinely find nothing substantive
+after reading the surrounding code, return an empty \`findings\` array and say
+so in the summary — that is a useful answer, and inventing findings to look
+thorough is not.
+
+Never invent a file, a line, a call path, or runtime behaviour you cannot
+support from what you actually read.`;
+}
+
 const DEFECT_LENS = {
   title: "Adversarial code review",
   intro: `You are an adversarial reviewer. Your job is to find what is WRONG with this
@@ -49,28 +114,15 @@ Correctness and edge cases; error and failure handling; concurrency and
 ordering; data loss and destructive operations; auth, permissions, and input
 validation; resource leaks; API/contract breaks for existing callers; state
 that can go inconsistent on a partial failure.`,
-  format: `## Output format
-
-Emit findings in descending severity. Format each one as a level-3 markdown
-heading holding one severity word followed by the claim, then four bullets.
-Severity is exactly one of CRITICAL, HIGH, MEDIUM, LOW. Like this:
-
-### HIGH Retry loop double-charges on a timeout
-- **Where:** \`billing/charge.py:88\`
-- **Failure:** concrete inputs or sequence of events, then the wrong result. If
-  you cannot write a concrete failure scenario, drop the finding entirely.
-- **Confirmed:** say VERIFIED if you read the surrounding code and call sites to
-  establish this, or SUSPECTED if it is inferred from the diff alone.
-- **Fix:** the smallest safe change.
-
-After the last finding, close with a level-3 heading reading exactly
-"Verdict: SHIP" or "Verdict: REVISE" or "Verdict: RETHINK", then one paragraph.
-If REVISE or RETHINK, list the specific blocking items.
-
-Rules: no praise sections, no restating the diff, no style or formatting nits
-unless they cause a real bug. If you genuinely find nothing substantive after
-reading the surrounding code, say so plainly and return SHIP — do not invent
-findings to look thorough.`,
+  format: OUTPUT_CONTRACT({
+    verdicts: ["SHIP", "REVISE", "RETHINK"],
+    verdictGuide: `SHIP when you cannot support a substantive finding. REVISE when the
+implementation has defects that must be fixed but the approach is right.
+RETHINK when the defects indicate the approach itself is wrong.`,
+    bodyGuide: `A concrete failure: specific inputs or a sequence of events, then the wrong
+result that follows. If you cannot write one, drop the finding entirely.`,
+    recommendationGuide: "The smallest safe change that fixes it.",
+  }),
 };
 
 const DESIGN_LENS = {
@@ -101,29 +153,18 @@ is running that pass.`,
 - **Fit.** Does this match how the rest of this repository already solves the
   same class of problem? Divergence is not automatically wrong, but it should
   be deliberate. Read the neighbouring code and find out.`,
-  format: `## Output format
-
-Emit challenges in descending order of consequence. Format each as a level-3
-markdown heading holding the word CHALLENGE and a one-line claim, then four
-bullets:
-
-### CHALLENGE Cache invalidation is left to the caller
-- **Assumption:** what the design takes for granted, stated plainly.
-- **Breaks when:** the concrete real-world condition that invalidates it. If you
-  cannot name a condition, drop the challenge entirely.
-- **Confirmed:** VERIFIED if you established this by reading the surrounding
-  code and its existing patterns, SUSPECTED if inferred from the diff alone.
-- **Alternative:** what you would do instead, and honestly, what it costs.
-
-After the last challenge, close with a level-3 heading reading exactly
-"Verdict: SOUND" or "Verdict: RECONSIDER" or "Verdict: WRONG-SHAPE", then one
-paragraph. If RECONSIDER or WRONG-SHAPE, name the single change to the approach
-that would most improve it.
-
-Rules: no praise sections, no restating the diff, no bug hunting, no style nits.
-A design that is genuinely well-suited to its problem should get SOUND and a
-short review — do not manufacture objections to look rigorous. Disagreement is
-only useful when you can name the condition under which you are right.`,
+  format: OUTPUT_CONTRACT({
+    verdicts: ["SOUND", "RECONSIDER", "WRONG-SHAPE"],
+    verdictGuide: `SOUND when the approach genuinely fits its problem. RECONSIDER when a
+specific part of the design should change. WRONG-SHAPE when the whole approach
+is the wrong one.`,
+    bodyGuide: `State the assumption the design takes for granted, then the concrete
+real-world condition under which it stops holding. If you cannot name a
+condition, drop the challenge entirely.`,
+    recommendationGuide:
+      "What you would do instead, and honestly, what that alternative costs.",
+    severityGuide: "Severity here means consequence if the assumption breaks, not bug severity.",
+  }),
 };
 
 export const LENSES = { defect: DEFECT_LENS, design: DESIGN_LENS };
@@ -132,11 +173,9 @@ export function isLens(name) {
   return Object.prototype.hasOwnProperty.call(LENSES, name);
 }
 
-/** The verdict words each lens is allowed to end on, for the panel tally. */
-export const VERDICTS = {
-  defect: ["SHIP", "REVISE", "RETHINK"],
-  design: ["SOUND", "RECONSIDER", "WRONG-SHAPE"],
-};
+// The verdict vocabularies live in findings.mjs, which owns the schema. Kept as
+// a re-export so existing importers do not need to care where they moved to.
+export { VERDICTS } from "./findings.mjs";
 
 /** Assemble the full review request written to the 0600 temp file. */
 export function buildRequest({ lens, repoRoot, branch, description, filesChanged, focus, diff }) {
@@ -164,10 +203,9 @@ export function buildRequest({ lens, repoRoot, branch, description, filesChanged
     "",
     spec.format,
     "",
-    `Output the review only. Do not narrate your process, do not show your working,
-do not restate these instructions, and do not preface the review with anything.
-Begin your reply directly with the first heading (or with the verdict heading if
-you have nothing to report).`,
+    `Output the JSON object only. Do not narrate your process, do not show your
+working, do not restate these instructions, and do not write anything before or
+after the JSON.`,
     "",
     "## The diff under review",
     "",

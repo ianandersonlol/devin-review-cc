@@ -279,7 +279,8 @@ Options:
   --dry-run           build the diff and run the secret scan, then stop without
                       calling devin — shows exactly what would be reviewed and
                       spends nothing
-  --json              machine-readable output (panel, setup, status, models)
+  --json              the validated structured report (any review path), or
+                      machine-readable output for setup, status and models
   -h, --help          this message
 
 rescue only:

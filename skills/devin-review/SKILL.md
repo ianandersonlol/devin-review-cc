@@ -76,6 +76,31 @@ Default scope is the working tree vs the merge-base, so work committed on the
 branch **and** still-uncommitted work are reviewed together. Untracked files are
 included — `git diff` ignores them, and new files are where new bugs live.
 
+## The findings contract
+
+Reviews return a **structured report**; the markdown you see is rendered from it.
+Every finding carries `severity`, `title`, `body`, `file`, `line_start`,
+`line_end`, `confidence` (0–1), `grounding` (`verified` / `inferred`) and
+`recommendation`, plus a top-level `verdict`, `summary` and `next_steps`.
+
+For you as the consumer this means:
+
+- **Cite findings by address.** They are numbered per model: `swe-1-7#2`. Use
+  those when reporting to the user or when asking for a follow-up, rather than
+  re-quoting the text.
+- **Read `grounding` before you trust a claim.** `verified` means the reviewer
+  says it opened the surrounding code and call sites; `inferred` means it
+  reasoned from the diff alone. It defaults to `inferred`, so an `inferred`
+  finding is your cue to check the code yourself before repeating it.
+- **`confidence` is the model's own, and self-reported.** Treat it as a
+  prioritisation hint, not evidence. No model here verifies its own findings —
+  that job is still yours.
+- **`--json` gives the validated structure** on any review path, single or panel.
+  Prefer it when you intend to filter, sort, or feed specific findings onward.
+- **`format: "unstructured"`** means that model did not return parseable JSON.
+  Its text is printed in full and is still worth reading; it just has no
+  addressable findings and took no part in correlation. Say so if you rely on it.
+
 ## Picking a lens
 
 `review` assumes the design is settled and hunts for defects: correctness, edge
@@ -94,7 +119,14 @@ both reviews can never blur which lens reached which conclusion.
 ## Using the panel
 
 `panel` runs each model over the identical request, blind to the others, and
-prints a comparison table followed by every review in full.
+prints a comparison table, a **corroboration map**, and then every review in full.
+
+The corroboration map is the part to read first, and it is computed
+arithmetically — same file, overlapping line ranges — never by asking a model.
+It splits findings into **corroborated** (more than one model flagged this site)
+and **single-source** (exactly one did). The tolerance is deliberately tight, so
+it will occasionally list one bug as two single-source entries; it will not
+invent agreement that is not there.
 
 **It does not synthesize, and that is deliberate.** A fourth model asked to merge
 three reviews has no repository access, cannot check any claim, and reliably

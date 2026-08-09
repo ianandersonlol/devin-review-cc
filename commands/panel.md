@@ -34,9 +34,14 @@ once (default 3).
    is deliberate: two reviews are worth having. The report lists which models
    returned nothing and why.
 
-3. Present the output. The report already leads with a comparison table
-   (verdict, findings by severity, time per model) followed by each review in
-   full. Keep that structure — do not collapse three reviews into one summary.
+3. Present the output. The report leads with a comparison table, then a
+   **corroboration map** splitting findings into corroborated and single-source,
+   then each review in full. Keep that structure — do not collapse three reviews
+   into one summary.
+
+   Findings are addressable as `model#id` (e.g. `swe-1-7#2`). Use those addresses
+   when you discuss them rather than re-quoting the text, and pass `--json` if
+   you want the validated structure to filter or sort on.
 
 4. **Then do the reconciliation, because nothing else will.** The script
    deliberately does not synthesize: a fourth model asked to merge three reviews
@@ -44,11 +49,14 @@ once (default 3).
    whatever was stated most confidently. That job is yours, and you have the
    code. Specifically:
 
-   - **Weight heavily what two or more models found independently.** Convergent
-     findings from different vendors are the strongest signal a panel produces.
-   - **Look hardest at what only one model found.** It is either the sharpest
-     finding in the set or a hallucination — check it against real code and say
-     which.
+   - **Weight heavily what two or more models found independently** — the
+     "Corroborated" section has already identified these for you.
+   - **Look hardest at the "Single-source" list.** Each is either the sharpest
+     finding in the set or a hallucination; check it against real code and say
+     which. Note that correlation is arithmetic and errs toward splitting, so
+     two single-source entries at nearby lines may be one bug described twice.
+   - **Check `grounding` before repeating a claim.** `inferred` means the model
+     reasoned from the diff without opening the call sites.
    - **Where they contradict each other, read the code and say who was right.**
      Do not average the verdicts, and do not count votes. The report flags
      disagreement explicitly; that flag is an instruction to go look.

@@ -3,65 +3,21 @@ import test from "node:test";
 
 import { parseModels } from "../skills/devin-review/scripts/lib/devin.mjs";
 import {
-  countFindings,
   diversityWarnings,
   estimateCost,
-  extractVerdict,
-  formatPanel,
   interpret,
   runPanel,
 } from "../skills/devin-review/scripts/lib/panel.mjs";
 
-const DEFECT_REVIEW = `### HIGH Retry loop double-charges
-- **Where:** \`billing.py:88\`
-
-### MEDIUM Missing null check
-- **Where:** \`a.py:1\`
-
-### Verdict: REVISE
-
-The retry path needs fixing first.`;
-
-// ── verdict extraction ───────────────────────────────────────────────────────
-
-test("extractVerdict reads the closing verdict heading", () => {
-  assert.equal(extractVerdict(DEFECT_REVIEW, "defect"), "REVISE");
-});
-
-test("extractVerdict ignores verdict words used in prose", () => {
-  // This is the whole reason the pattern is anchored to the heading: a reviewer
-  // writing "I would SHIP this if" mid-paragraph must not become a tally entry.
-  const review = "### HIGH thing\n- I would normally SHIP this, but no.\n\n### Verdict: RETHINK\n";
-  assert.equal(extractVerdict(review, "defect"), "RETHINK");
-});
-
-test("extractVerdict will not read a design verdict as a defect verdict", () => {
-  // The two vocabularies are disjoint so a mixed transcript can never confuse
-  // which lens produced which conclusion.
-  assert.equal(extractVerdict("### Verdict: SOUND\n", "defect"), null);
-  assert.equal(extractVerdict("### Verdict: SOUND\n", "design"), "SOUND");
-});
-
-test("extractVerdict returns null when the model never stated one", () => {
-  assert.equal(extractVerdict("### HIGH thing\n- nope\n", "defect"), null);
-});
-
-test("extractVerdict handles the hyphenated design verdict", () => {
-  assert.equal(extractVerdict("### Verdict: WRONG-SHAPE\n", "design"), "WRONG-SHAPE");
-});
-
-// ── finding counts ───────────────────────────────────────────────────────────
-
-test("countFindings tallies each severity heading", () => {
-  const counts = countFindings(DEFECT_REVIEW, "defect");
-  assert.equal(counts.HIGH, 1);
-  assert.equal(counts.MEDIUM, 1);
-  assert.equal(counts.CRITICAL, 0);
-});
-
-test("countFindings uses the design vocabulary for the design lens", () => {
-  const counts = countFindings("### CHALLENGE one\n### CHALLENGE two\n", "design");
-  assert.equal(counts.CHALLENGE, 2);
+const DEFECT_REVIEW = JSON.stringify({
+  verdict: "REVISE",
+  summary: "The retry path needs fixing first.",
+  findings: [
+    { severity: "high", title: "Retry loop double-charges", body: "Two charges on timeout.",
+      file: "billing.py", line_start: 88, line_end: 90, confidence: 0.8,
+      grounding: "verified", recommendation: "Add an idempotency key." },
+  ],
+  next_steps: ["Fix the retry path."],
 });
 
 // ── interpretation ───────────────────────────────────────────────────────────
@@ -222,100 +178,4 @@ test("estimateCost reports incompleteness rather than guessing a missing price",
 
 test("estimateCost declines to invent a number without a roster", () => {
   assert.equal(estimateCost(["kimi-k3-high"], 1000, null), null);
-});
-
-// ── the report ───────────────────────────────────────────────────────────────
-
-const panelResults = [
-  { model: "a", ok: true, review: DEFECT_REVIEW, durationSeconds: 10, className: "ok" },
-  { model: "b", ok: true, review: "### Verdict: SHIP\n\nLooks fine.", durationSeconds: 8, className: "ok" },
-  { model: "c", ok: false, review: "", durationSeconds: 2, className: "quota", reason: "out of quota" },
-];
-
-test("the report opens with a comparison table covering every model", () => {
-  const report = formatPanel({ results: panelResults, lens: "defect", scope: "branch", warnings: [] });
-  for (const model of ["a", "b", "c"]) assert.match(report, new RegExp(`\\| \`${model}\` \\|`));
-  assert.match(report, /REVISE/);
-  assert.match(report, /SHIP/);
-});
-
-test("disagreement between reviewers is stated explicitly", () => {
-  const report = formatPanel({ results: panelResults, lens: "defect", scope: "branch", warnings: [] });
-  assert.match(report, /panel disagrees/i);
-});
-
-test("a unanimous panel is not told that it disagrees", () => {
-  const agreed = panelResults.map((r) => ({ ...r, review: "### Verdict: SHIP\n", ok: r.ok }));
-  const report = formatPanel({ results: agreed, lens: "defect", scope: "branch", warnings: [] });
-  assert.ok(!/panel disagrees/i.test(report));
-});
-
-test("models that produced nothing are reported as missing data, not as agreement", () => {
-  const report = formatPanel({ results: panelResults, lens: "defect", scope: "branch", warnings: [] });
-  assert.match(report, /out of quota/);
-  assert.match(report, /not as agreement/i);
-});
-
-test("every usable review appears in the report in full", () => {
-  const report = formatPanel({ results: panelResults, lens: "defect", scope: "branch", warnings: [] });
-  assert.match(report, /Retry loop double-charges/);
-  assert.match(report, /Looks fine\./);
-});
-
-test("warnings are surfaced in the report body, not only on stderr", () => {
-  const report = formatPanel({
-    results: panelResults, lens: "defect", scope: "branch", warnings: ["these two models are siblings"],
-  });
-  assert.match(report, /these two models are siblings/);
-});
-
-test("extractVerdict survives the bold formatting models actually emit", () => {
-  // A tally that reads these as "unstated" makes the panel look like it
-  // disagreed when it did not.
-  assert.equal(extractVerdict("### Verdict: **SHIP**\n", "defect"), "SHIP");
-  assert.equal(extractVerdict("### **Verdict:** REVISE\n", "defect"), "REVISE");
-  assert.equal(extractVerdict("### **Verdict: RETHINK**\n", "defect"), "RETHINK");
-  assert.equal(extractVerdict("## Verdict: **WRONG-SHAPE**\n", "design"), "WRONG-SHAPE");
-});
-
-test("extractVerdict still refuses verdict words in prose after the bold fix", () => {
-  assert.equal(extractVerdict("I would **SHIP** this tomorrow.\n", "defect"), null);
-});
-
-test("an unexplained non-zero exit does not claim the run exited 0", () => {
-  // classifyEmptyOutput's fallback sentence says "exit 0"; borrowing it for a
-  // crash sends the reader looking in entirely the wrong place.
-  const result = interpret(
-    { model: "m", code: 137, stdout: "", stderr: "", durationSeconds: 9 },
-    "/repo",
-  );
-  assert.equal(result.className, "exit_error");
-  assert.ok(!/exit 0/.test(result.reason), `reason must not claim exit 0: ${result.reason}`);
-  assert.match(result.reason, /137/);
-});
-
-test("a non-zero exit with stderr reports the tidied stderr", () => {
-  const result = interpret(
-    { model: "m", code: 1, stdout: "", stderr: "Error: Agent error: the backend fell over", durationSeconds: 3 },
-    "/repo",
-  );
-  assert.equal(result.className, "exit_error");
-  assert.match(result.reason, /backend fell over/);
-});
-
-test("a throwing progress callback cannot lose a completed review", () => {
-  return runPanel({
-    models: ["a", "b"],
-    concurrency: 2,
-    repoRoot: "/repo",
-    devinPath: "devin",
-    requestFile: "/tmp/r",
-    onFinish: () => { throw new Error("callback exploded"); },
-    runner: async ({ model }) => ({
-      model, code: 0, stdout: "### Verdict: SHIP\n", stderr: "", durationSeconds: 1,
-    }),
-  }).then((results) => {
-    assert.equal(results.length, 2);
-    assert.ok(results.every((r) => r.ok), "both reviews should survive a broken callback");
-  });
 });

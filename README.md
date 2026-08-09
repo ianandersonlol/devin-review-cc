@@ -56,13 +56,26 @@ the identical diff, in parallel, each blind to the others.
 
 …followed by each review in full.
 
-**It does not merge them, on purpose.** Handing three reviews to a fourth model
-and asking for "the consensus" produces a reviewer with no repository access, no
-ability to check any claim, and a strong bias toward whatever was phrased most
-confidently. It would launder three independent signals into one derivative
-opinion and hide the disagreements — which are the most useful thing a panel
-produces. So the tool tallies verdicts mechanically and leaves reconciliation to
-the agent driving it, which can actually read the code.
+…and, above the reviews, a **corroboration map**:
+
+```
+**Corroborated — 2 site(s) flagged by more than one model.**
+- `calc.py:1-2` — 2 models (swe-1-7, glm-5-2), max severity CRITICAL
+  - `swe-1-7#1` `add` returns `a - b` instead of `a + b`.
+  - `glm-5-2#1` add() returns a-b instead of a+b, inverting its documented behavior
+
+**Single-source — 1 site(s) flagged by exactly one model.**
+Each is either the sharpest finding in the set or a hallucination.
+```
+
+That map is computed arithmetically — same file, overlapping line ranges — never
+by asking a model. **The panel does not merge or summarise the reviews, on
+purpose.** Handing three reviews to a fourth model and asking for "the consensus"
+produces a reviewer with no repository access, no ability to check any claim, and
+a strong bias toward whatever was phrased most confidently. It would launder
+three independent signals into one derivative opinion and hide the disagreements
+— the most useful thing a panel produces. Correlation is arithmetic; adjudication
+is left to whoever can read the code.
 
 Pick different **vendors**, not different checkpoints of one model: two Opus
 tiers reviewing the same diff is one opinion billed twice. The tool warns about
@@ -74,6 +87,48 @@ free. That is a robustness choice as much as a cost one: paid capacity is what
 runs out mid-week, and a default panel that returns nothing the moment a quota
 trips is a default panel nobody trusts. A partially failed panel still prints
 what it got and names what it lost.
+
+## The findings contract
+
+The **structured report is the source of truth**; the markdown is a rendering of
+it. Models are asked for one JSON object, modelled on the Codex plugin's review
+schema:
+
+```json
+{
+  "verdict": "SHIP" | "REVISE" | "RETHINK",
+  "summary": "A terse ship/no-ship assessment.",
+  "findings": [{
+    "severity": "critical" | "high" | "medium" | "low",
+    "title": "...", "body": "...", "recommendation": "...",
+    "file": "billing.py", "line_start": 88, "line_end": 94,
+    "confidence": 0.82, "grounding": "verified" | "inferred"
+  }],
+  "next_steps": ["..."]
+}
+```
+
+Only the **envelope** is structured. `body` and `recommendation` are free prose
+with no shape imposed, because constraining a reviewer's *argument* to a schema
+makes the argument worse — the fields exist so findings can be sorted, addressed
+and correlated, not to discipline the thinking.
+
+Three consequences worth knowing:
+
+- **Findings are addressable.** `swe-1-7#2` refers to one specific claim, so a
+  review can be discussed without quoting it back.
+- **`grounding` is reported and used.** `verified` means the reviewer opened the
+  call sites; `inferred` means it reasoned from the diff. It defaults to
+  `inferred` when a model omits it — never to `verified`.
+- **`confidence` is displayed, not swallowed.** The Codex plugin requires a
+  confidence score on every finding and then never renders it; here it is shown,
+  and a missing one shows as `n/a` rather than a fabricated 0.5.
+
+Devin cannot enforce a schema the way the Codex CLI can, so the parser is
+forgiving: fenced or bare JSON, preamble prose tolerated, one malformed finding
+dropped rather than the whole report, and output that will not parse at all is
+still printed in full with a caveat. `--json` gives you the validated structure
+on every review path, single or panel.
 
 ## Two lenses
 
