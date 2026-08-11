@@ -349,6 +349,31 @@ multiplies cost by the number of paid members, so the tool prints a rough
 estimate before it runs and `--dry-run` prints it and stops. `models` shows live
 per-MTok pricing read from your account rather than a hardcoded table.
 
+## Known quirks that are not this plugin's doing
+
+Recorded so nobody spends an afternoon rediscovering them.
+
+**Model selection is a CLI-only concept.** The Devin *MCP server*'s
+`devin_session_create` has no documented way to choose a model, and passing
+`additional_args` to do it is rejected on production with
+`additional_args is not supported` — despite the tool's own description
+presenting it as an ordinary per-session option, noting only that it is
+"staging-only and server-allowlisted". Use the CLI's `--model`, which is what
+this plugin does.
+
+**Your `~/.claude/CLAUDE.md` is loaded into every Devin session** as a
+user-level always-on rule — `devin rules list` reports it as `CLAUDE [Claude]`.
+Reviewers therefore read your personal Claude instructions along with the review
+request. It is mostly harmless and nearly free (it caches), but it is worth
+knowing if a reviewer ever says something that makes sense only in the context
+of your own agent guidance. No config key was found that disables it:
+`claude`, `rules.claude`, `imports.claude` and `agent.rules.claude` were all
+tried and none suppressed the import.
+
+**`rg` and `grep` are rejected as shell commands.** Devin wants its own grep
+tool used instead. This is only a trap because a rejected command destroys the
+whole turn, which is why the reviewer prompt names them explicitly.
+
 ## Prior art
 
 This is a sibling of [agy-review](https://github.com/ianandersonlol/agy-review)
