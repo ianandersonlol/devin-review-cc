@@ -201,7 +201,7 @@ test("a read-only rescue may be told to re-run; a writing one may not", () => {
   assert.match(classifyEmptyOutput("", 5, denials, { canRetry: false }).reason, /diff of what it changed/i);
 });
 
-test("rescue is never told that re-running usually works", () => {
+test("a WRITING rescue is never told that re-running usually works", () => {
   // classifyEmptyOutput is shared with rescue, which by design is NEVER retried
   // automatically because it may already have edited files. Advising the user to
   // re-run by hand is the same hazard the code refuses to take on itself.

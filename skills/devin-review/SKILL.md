@@ -276,7 +276,8 @@ from someone else, it is the whole reason the check exists.
 - Paid models consume Devin usage quota; free models do not. A panel multiplies
   cost by the number of paid models in it — the script prints a rough estimate
   before running, and `--dry-run` prints it and stops.
-- Reviews are synchronous and typically return in 15–40 seconds; a panel takes
+- Reviews are synchronous and measured at roughly 190–640 seconds on a small
+  diff, with wide variance between models; a panel takes
   about as long as its slowest member. If you need one to run without blocking,
   launch it as a background task from the host agent.
 - The reviewer's read-only property comes from Devin rejecting unapproved tool

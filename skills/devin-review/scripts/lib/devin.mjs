@@ -550,6 +550,24 @@ const CONTENT_TOOLS = new Set([
 ]);
 
 /**
+ * A refusal is the WHOLE result, and a short one. File content is neither.
+ *
+ * Devin's longest refusal runs about 160 characters; command output that merely
+ * mentions a rejection runs to thousands. Two panel reviewers independently
+ * flagged that widening the pattern to `was|were denied|rejected` had made
+ * false positives reachable through `exec`, because this same change told
+ * reviewers that `cat`, `rg`, `head` and `tail` are commands they may run.
+ *
+ * Their suggested fix — treat those programs as content-bearing, the way the
+ * `read` tool is — would have broken the diagnosis that matters most: a
+ * rejected `git -C <path> log` IS an `exec` whose command starts with `git`, so
+ * a program allowlist would skip the single most common real failure. Bounding
+ * the LENGTH separates the two cleanly instead: refusals stay in, file dumps
+ * drop out, and no command has to be enumerated.
+ */
+const MAX_DENIAL_CHARS = 400;
+
+/**
  * Recover, from an exported transcript, which tool calls Devin refused.
  *
  * Returns [] for every kind of "could not tell" — no file, unreadable, a schema
@@ -582,7 +600,9 @@ export async function readTranscriptDenials(exportPath) {
       // does not start with one. `exec` needs the anchor as much as `read` does
       // — `git diff` output quotes whatever the diff touched.
       if (CONTENT_TOOLS.has(tool)) continue;
-      const firstLine = content.trimStart().split("\n", 1)[0];
+      const trimmed = content.trim();
+      if (trimmed.length > MAX_DENIAL_CHARS) continue;
+      const firstLine = trimmed.split("\n", 1)[0];
       if (!DENIAL_PATTERN.test(firstLine)) continue;
 
       denials.push({ tool, detail: describeCall(call), message: firstLine.trim() });
@@ -680,7 +700,10 @@ export function classifyEmptyOutput(stderr, durationSeconds, denials = [], { can
           ? "Re-running often succeeds; a narrower --focus makes it less likely."
           : "Check the diff of what it changed before deciding whether to re-run — it may " +
             "have edited files before it stopped, so a second run would not start from where you think."),
-      retryable: true,
+      // Tracks the advice rather than always claiming true. A --json consumer
+      // reading `retryable: true` off a writing rescue would be told the
+      // opposite of what the prose beside it says.
+      retryable: canRetry,
     };
   }
   if (/resource_exhausted|quota|rate.?limit|\b429\b|insufficient (credit|balance)|billing/i.test(text)) {

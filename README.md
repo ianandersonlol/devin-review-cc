@@ -271,7 +271,7 @@ attempt the model usually does not reach for the same tool — and the retry is
 reported rather than silent, so a model that is reliably failing does not hide
 behind a review that looks like it cost one run. Only `blocked_tool` and
 unexplained `empty_output` are retried; a timeout is not, because retrying a run
-that already burned ten minutes doubles the wait for a cause that will still be
+that already burned its whole budget doubles the wait for a cause that will still be
 true. **`rescue` never retries**, because it may already have edited files.
 
 A panel that loses a reviewer still exits 0 — two of three reviews are worth

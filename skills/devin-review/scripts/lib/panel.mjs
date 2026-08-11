@@ -26,7 +26,7 @@ import { extractJson, normalizeReport } from "./findings.mjs";
  * case — nothing to act on, so trying again is the only move left.
  *
  * `timeout` is pointedly NOT here even though interpret() marks it retryable for
- * a human. Retrying a run that already burned ten minutes silently doubles the
+ * a human. Retrying a run that already burned its whole budget silently doubles the
  * wall clock of a review the user is waiting on, and the reason it timed out
  * (usually a diff too large) will still be true the second time.
  */

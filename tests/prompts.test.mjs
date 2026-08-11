@@ -91,6 +91,20 @@ test("the reviewer is told it cannot run the test suite", () => {
   }
 });
 
+test("the allowlist promises only commands verified against the real CLI", () => {
+  // A panel reviewer pointed out the allowlist was asserting classifier
+  // approval it had never checked, and it was right: `rg` turned out to be
+  // REJECTED (Devin wants its own grep tool used instead). Promising a command
+  // that gets refused is worse than omitting it, because the prompt is the only
+  // thing standing between a reviewer and a destroyed turn.
+  const request = buildRequest(base);
+  const allowed = request.slice(request.indexOf("**Allowed**"), request.indexOf("**Rejected"));
+  assert.ok(!/\brg\b/.test(allowed), "rg is rejected by the classifier and must not be advertised");
+  for (const ok of ["git log", "git blame", "ls", "cat", "head", "tail", "wc"]) {
+    assert.ok(allowed.includes(ok), `${ok} was verified approved and should be offered`);
+  }
+});
+
 test("the reviewer is told not to write its report to a file", () => {
   // Observed in a real panel: a model asked for a report reaches for somewhere
   // to save it, and that single write attempt discards the finished review.
@@ -197,8 +211,26 @@ test("the rescue prompt demands the smallest change", () => {
 test("write mode and read-only mode give opposite editing instructions", () => {
   assert.match(buildRescueRequest(rescueBase), /You have write access/i);
   const readOnly = buildRescueRequest({ ...rescueBase, readOnly: true });
-  assert.match(readOnly, /edit and write tools are denied/i);
+  assert.match(readOnly, /`edit` and `write` tools are denied/i);
   assert.ok(!/You have write access/i.test(readOnly));
+});
+
+test("a read-only rescue gets the SAME shell boundary as a review", () => {
+  // Caught by a panel reviewer as a HIGH: the review prompt had been hardened
+  // against `git -C` and `npm test` while the rescue prompt had not, even
+  // though a read-only rescue runs on identical permissions — and is asked to
+  // diagnose a failing test while holding the repo path, which is close to a
+  // dare to run both. Asserted on the rescue prompt specifically, because the
+  // earlier tests covered only buildRequest and that is exactly how it was
+  // missed.
+  const readOnly = buildRescueRequest({ ...rescueBase, readOnly: true });
+  assert.match(readOnly, /git -C/);
+  assert.match(readOnly, /cannot run\s+the test suite/i);
+  assert.match(readOnly, /`cd anywhere`/i);
+
+  // A writing rescue has its own permissions and its own instructions, so it
+  // must NOT be handed the reviewer's "you cannot change anything" boundary.
+  assert.ok(!/cannot change anything/i.test(buildRescueRequest(rescueBase)));
 });
 
 test("the problem statement reaches the prompt", () => {
@@ -235,6 +267,6 @@ test("a read-only rescue is never invited to change anything", () => {
   // It MAY read: a read-only rescue runs on the reviewer permissions, which
   // leave read-only commands available. What it must not think it can do is
   // change something.
-  assert.match(request, /any command that\s+changes anything/i);
+  assert.match(request, /cannot change anything/i);
   assert.match(request, /describe the change you would make/i);
 });

@@ -54,9 +54,25 @@ that changed. Once you can support a few solid findings, **stop reading and
 write the report** — and if you are running long, write it immediately with what
 you have rather than pressing on.
 
-## You cannot change anything, and trying DESTROYS your review
+`;
 
-Read this twice. It is the single most common way a review here is lost.
+/**
+ * What the shell will and will not accept, shared by reviews and by a
+ * --read-only rescue.
+ *
+ * Shared rather than duplicated because a panel reviewer caught it being only
+ * half-applied: the review prompt had been hardened while `buildRescueRequest`
+ * still told a read-only rescuer merely that "commands that change things are
+ * denied". A read-only rescue runs on exactly the same permissions and so hits
+ * exactly the same lost turns — it is handed the absolute repository path and
+ * asked to diagnose a failing test, which is close to a dare to run `git -C`
+ * and then `npm test`.
+ *
+ * Every rejection listed here was observed in a real transcript, not imagined.
+ */
+const SHELL_BOUNDARY = `## You cannot change anything, and trying DESTROYS your work
+
+Read this twice. It is the single most common way work here is lost.
 
 The \`edit\` and \`write\` tools are denied. So is any shell command that changes
 anything: a \`>\` redirect, \`mkdir\`, \`rm\`, \`mv\`, \`touch\`, \`git add\`,
@@ -74,10 +90,11 @@ Prefer your \`read\`, \`grep\` and file-search tools — they are what this job
 needs, and they are never rejected. The shell is a narrow supplement, and the
 list of what it will accept is SHORT and EXACT:
 
-**Allowed** — and only when run BARE from the directory you are already in,
-which is the repository root:
+**Allowed** — every one of these was verified against the real CLI, and only
+when run BARE from the directory you are already in, which is the repository
+root:
 \`git log\`, \`git show\`, \`git blame\`, \`git diff\`, \`ls\`, \`cat\`,
-\`head\`, \`tail\`, \`wc\`, \`rg\`.
+\`head\`, \`tail\`, \`wc\`.
 
 **Rejected — each one ends your turn and destroys your review:**
 
@@ -89,6 +106,9 @@ which is the repository root:
   \`cargo\`, \`make\`, \`go\`, \`tsc\`, or executing any script. **You cannot run
   the test suite.** Do not try it even to check whether a test passes — judge
   the tests by reading them, and say plainly that you could not execute them.
+- **\`rg\` and \`grep\` as shell commands.** Verified rejected — Devin wants you
+  to use its own grep TOOL for this, which is always available and never
+  refused. Search with the tool, never with the shell.
 - Installing anything, or any network access (\`curl\`, \`wget\`).
 - Anything that writes, as above.
 
@@ -253,6 +273,8 @@ export function buildRequest({ lens, repoRoot, branch, description, filesChanged
     "",
     SHARED_REPO_ACCESS.replace("{{REPO_ROOT}}", repoRoot),
     "",
+    SHELL_BOUNDARY,
+    "",
     spec.body,
   ];
 
@@ -331,10 +353,11 @@ export function buildRescueRequest({ problem, repoRoot, branch, readOnly, allowC
     "",
     readOnly
       ? `Diagnose the problem below and propose the smallest safe fix. You are in
-read-only mode: the edit and write tools are denied, and so is any command that
-changes anything. Read-only commands (\`git log\`, \`ls\`, \`cat\`) ARE available
-and worth using. Calling a denied tool ends your turn and discards your work, so
-describe the change you would make rather than attempting it.`
+read-only mode and cannot change anything — describe the change you would make
+rather than attempting it. The exact boundary is spelled out below; read it,
+because a rescue is asked to diagnose a failing test while holding the
+repository path, and that is precisely the situation that tempts the two
+commands which would throw your diagnosis away.`
       : `Diagnose and FIX the problem below by editing files in this repository.
 You have write access to the working tree.`,
     "",
@@ -345,6 +368,12 @@ You have write access to the working tree.`,
     "",
     problem,
   ];
+
+  // A read-only rescue runs on the reviewer permissions, so it inherits the
+  // reviewer's lost-turn hazards verbatim and needs the same boundary spelled
+  // out. A writing rescue does not: it has its own permissions and its own
+  // instructions immediately below.
+  if (readOnly) sections.push("", SHELL_BOUNDARY);
 
   if (!readOnly) {
     sections.push(
