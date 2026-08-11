@@ -34,7 +34,8 @@ Use your read, grep, and file-search tools on the repo at {{REPO_ROOT}} to:
 - find every CALLER of every function whose signature, return value, error
   behaviour, or nullability changed, and check each call site still holds
 - check whether tests exist for the changed paths, and whether they actually
-  cover the new behaviour or just the happy path
+  cover the new behaviour or just the happy path — by READING them. You cannot
+  run them, and trying ends your turn (see below).
 - look for OTHER places in the codebase with the same bug or the same pattern
   that the author fixed here but missed there
 - verify claims in comments and commit messages against the real code
@@ -69,10 +70,30 @@ In particular: **do NOT write your report to a file.** Your report is what you
 print as your final message. There is no file to save it to and attempting to
 create one loses the report you just spent the whole session writing.
 
-Prefer your \`read\`, \`grep\` and file-search tools; they are what this job
-needs. A read-only shell command (\`git log\`, \`git show\`, \`git blame\`) is
-available when history genuinely answers the question, but reach for it
-deliberately rather than by habit, and never for reading or searching files.
+Prefer your \`read\`, \`grep\` and file-search tools — they are what this job
+needs, and they are never rejected. The shell is a narrow supplement, and the
+list of what it will accept is SHORT and EXACT:
+
+**Allowed** — and only when run BARE from the directory you are already in,
+which is the repository root:
+\`git log\`, \`git show\`, \`git blame\`, \`git diff\`, \`ls\`, \`cat\`,
+\`head\`, \`tail\`, \`wc\`, \`rg\`.
+
+**Rejected — each one ends your turn and destroys your review:**
+
+- \`cd anywhere\`, or \`git -C /path ...\`. The repository path is printed above,
+  but using it is what breaks this. Plain \`git log\` runs; \`git -C /path log\`
+  is rejected. This looks like the careful, explicit thing to do, and it is the
+  single most common way a review is lost here.
+- **Running tests, builds or tooling**: \`npm\`, \`yarn\`, \`pnpm\`, \`pytest\`,
+  \`cargo\`, \`make\`, \`go\`, \`tsc\`, or executing any script. **You cannot run
+  the test suite.** Do not try it even to check whether a test passes — judge
+  the tests by reading them, and say plainly that you could not execute them.
+- Installing anything, or any network access (\`curl\`, \`wget\`).
+- Anything that writes, as above.
+
+If a command is not on the allowed list, do not run it. There is no way to ask
+permission and no way to recover.
 
 Do not spawn subagents — they cannot write either, and they cost you time you
 need for the review.`;

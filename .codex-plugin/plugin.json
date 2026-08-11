@@ -1,6 +1,6 @@
 {
   "name": "devin",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Adversarial code review via the Devin CLI. Runs your choice of frontier model read-only against your actual repo — or several of them in parallel, so you get genuinely independent opinions instead of one.",
   "author": {
     "name": "Ian Anderson",

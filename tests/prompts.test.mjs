@@ -67,6 +67,30 @@ test("the request draws the shell boundary where Devin actually draws it", () =>
   assert.match(request, /thrown\s+away|discard/i);
 });
 
+test("the reviewer is warned off cd and git -C, which Devin rejects", () => {
+  // Diagnosed from a real transcript: the reviewer did ten steps of good work,
+  // then ran `git -C <repo> diff --stat` and lost everything. Bare `git diff`
+  // is approved; the directory-changing form needs an approval nobody can give.
+  // The prompt prints the absolute repo path, so it INDUCES the broken form
+  // unless it says otherwise.
+  const request = buildRequest(base);
+  assert.match(request, /git -C/);
+  assert.match(request, /ends your turn/i);
+  assert.match(request, /`cd anywhere`/i);
+});
+
+test("the reviewer is told it cannot run the test suite", () => {
+  // Diagnosed from a real transcript: swe-1-7 reached for `npm test` and lost
+  // the review, twice. The instruction to check test coverage invites exactly
+  // that, so the prompt has to say the coverage judgement is made by READING.
+  const request = buildRequest(base);
+  assert.match(request, /cannot run\s+the test suite/i);
+  assert.match(request, /judge\s+the tests by reading them/i);
+  for (const tool of ["npm", "pytest", "cargo", "make"]) {
+    assert.ok(request.includes(tool), `${tool} should be named as rejected`);
+  }
+});
+
 test("the reviewer is told not to write its report to a file", () => {
   // Observed in a real panel: a model asked for a report reaches for somewhere
   // to save it, and that single write attempt discards the finished review.
@@ -89,7 +113,9 @@ test("the request never tells the reviewer it has no shell at all", () => {
 
 test("both lenses carry the shell boundary", () => {
   for (const lens of ["defect", "design"]) {
-    assert.match(buildRequest({ ...base, lens }), /READ-ONLY/i);
+    const request = buildRequest({ ...base, lens });
+    assert.match(request, /cannot change anything/i);
+    assert.match(request, /Rejected — each one ends your turn/i);
   }
 });
 

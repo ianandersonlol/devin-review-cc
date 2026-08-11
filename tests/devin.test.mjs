@@ -192,6 +192,15 @@ test("a corrupt config at one location does not discard a valid one below it", a
   }
 });
 
+test("a read-only rescue may be told to re-run; a writing one may not", () => {
+  // The distinction a panel reviewer caught: --read-only rescue runs on the
+  // reviewer permissions and cannot have edited anything, so the "check what it
+  // changed" warning is not merely unnecessary there, it is false.
+  const denials = [{ tool: "exec", detail: "npm test" }];
+  assert.match(classifyEmptyOutput("", 5, denials, { canRetry: true }).reason, /Re-running often succeeds/i);
+  assert.match(classifyEmptyOutput("", 5, denials, { canRetry: false }).reason, /diff of what it changed/i);
+});
+
 test("rescue is never told that re-running usually works", () => {
   // classifyEmptyOutput is shared with rescue, which by design is NEVER retried
   // automatically because it may already have edited files. Advising the user to
@@ -419,6 +428,32 @@ test("a real denial is still recognised, anchored to the first line", async () =
     assert.equal(denials.length, 1);
     assert.equal(denials[0].tool, "exec");
     assert.equal(denials[0].detail, "echo x > f");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Devin's several phrasings of a refusal are all recognised", async () => {
+  // "Tool execution was rejected by the user" was missed by the first pattern,
+  // so the one failure that actually recurs in practice — a `git -C <path>`
+  // command, which needs a directory-change approval nobody is there to give —
+  // was reported without naming the command that caused it.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "devin-denial-"));
+  const file = path.join(dir, "transcript.json");
+  try {
+    const phrasings = [
+      "Tool execution was rejected by the user",
+      "Permission to run the command `x` was denied.",
+      "Write access to '/f' was denied.",
+      "Subagent error: Tool was rejected",
+    ];
+    await fs.writeFile(file, JSON.stringify({
+      steps: phrasings.map((content, i) => ({
+        tool_calls: [{ tool_call_id: `c${i}`, function_name: "exec", arguments: { command: `cmd${i}` } }],
+        observation: { results: [{ source_call_id: `c${i}`, content }] },
+      })),
+    }));
+    assert.equal((await readTranscriptDenials(file)).length, phrasings.length);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }

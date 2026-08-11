@@ -43,7 +43,18 @@ export const PANEL_DEFAULT = ["swe-1-7", "glm-5-2", "kimi-k3-high"];
  */
 export const CORRELATED_PREFIXES = ["claude-", "claude_"];
 
-export const TIMEOUT_DEFAULT = "10m";
+/**
+ * Per-model wall clock.
+ *
+ * Raised from 10m on measurement, not taste. Reviewers that finish do so
+ * anywhere from 190s to 490s on a small diff — swe-1-7 was timed at 188s, 440s
+ * and once past 720s on the SAME 1.3KB diff — so the spread is wide and the old
+ * ceiling sat right on top of it. That is the worst place for a deadline: a
+ * timeout discards the entire review, since Devin only prints its final message
+ * at the end, so a run killed at 601s costs everything and returns nothing.
+ * Waiting longer is cheap by comparison, and fast runs are unaffected.
+ */
+export const TIMEOUT_DEFAULT = "15m";
 export const DEVIN_URL = "https://docs.devin.ai/cli";
 
 export async function findDevin() {
@@ -516,7 +527,7 @@ export async function runDevin({
  * this failure mode so hard to diagnose in the first place.
  */
 const DENIAL_PATTERN =
-  /^(?:permission (?:to|denied)|write access to|read access to|.{0,80}?\bwas denied\b|subagent error: tool was rejected|tool was rejected)/i;
+  /^(?:permission (?:to|denied)|write access to|read access to|.{0,80}?\b(?:was|were)\s+(?:denied|rejected)\b|subagent error: tool was rejected|tool was rejected)/i;
 
 /**
  * Tools whose results are file or search CONTENT, never a permission verdict.

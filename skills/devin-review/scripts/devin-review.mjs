@@ -624,12 +624,15 @@ async function commandRescue(options) {
     // Rescue is deliberately NOT on the findings schema: its output is a
     // narrative of what was done and why, which does not decompose into
     // addressable claims about code the way a review does.
-    // canRetry: false — rescue is never retried automatically, so it must not
-    // tell the user that re-running usually works either.
+    // A WRITING rescue must not advise re-running: it may have edited files
+    // before it stopped, so a second run would not start where the user thinks.
+    // A --read-only rescue is a different animal — it runs on the reviewer
+    // permissions and cannot have edited anything — so there the ordinary
+    // "re-running often succeeds" is both true and useful.
     const interpreted = interpret(result, root, {
       keepLinks: options.keepLinks,
       lens: "none",
-      canRetry: false,
+      canRetry: options.readOnly,
     });
 
     if (!interpreted.ok) {

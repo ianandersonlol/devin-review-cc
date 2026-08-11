@@ -59,7 +59,7 @@ this".
 --panel           shorthand for the default three-vendor panel
 --concurrency N   how many panel models run at once (default 3)
 --focus "TEXT"    steer the reviewer, e.g. --focus "auth and data loss"
---timeout DUR     per-model wall clock, e.g. 30s, 10m (default 10m)
+--timeout DUR     per-model wall clock, e.g. 30s, 10m (default 15m)
 -- <paths>        scope a large diff to specific paths
 --dry-run         show what would be reviewed; spends nothing
 --allow-secrets   waive the credential pre-flight (see below)
