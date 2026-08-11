@@ -1,6 +1,6 @@
 {
   "name": "devin-review",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "description": "Adversarial code review via the Devin CLI, with real repository access and multi-model panels.",
@@ -9,6 +9,7 @@
     "node": ">=18.0.0"
   },
   "scripts": {
-    "test": "node --test \"tests/*.test.mjs\""
+    "test": "node --test \"tests/*.test.mjs\"",
+    "test:live": "DEVIN_REVIEW_LIVE=1 node --test \"tests/readonly.live.test.mjs\""
   }
 }

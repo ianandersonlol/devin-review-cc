@@ -12,10 +12,18 @@ import { EXAMPLE_PLACEHOLDERS } from "./findings.mjs";
  *
  * In non-interactive mode, a tool call Devin cannot auto-approve does not fail
  * gracefully — it ends the turn and discards everything the model had produced,
- * leaving an exit code of 0 and an empty stdout. A reviewer that idly reaches
- * for `git log` therefore does not get a slightly worse review, it gets no
- * review at all, and the user pays for the tokens regardless. Telling the model
- * plainly what it does not have is the cheapest fix available.
+ * leaving an exit code of 0 and an empty stdout. A reviewer that reaches for a
+ * tool it does not have therefore does not get a slightly worse review, it gets
+ * no review at all, and the user pays for the tokens regardless. Drawing the
+ * boundary precisely is the cheapest fix available.
+ *
+ * It says "read-only shell" rather than "no shell" because that is now the
+ * truth. `--permission-mode auto` classifies each command instead of refusing
+ * all of them, so `git log` runs and `echo x > f` does not — and a reviewer told
+ * it had no shell at all would decline to use the one genuinely useful tool it
+ * has. Since these instructions no longer have a config file to travel in
+ * (Devin dropped `system-instructions` along with `--agent-config`), this prompt
+ * is the only place the boundary gets stated.
  */
 const SHARED_REPO_ACCESS = `## You have read access to the entire repository
 
@@ -33,12 +41,41 @@ Use your read, grep, and file-search tools on the repo at {{REPO_ROOT}} to:
 
 A finding you confirmed by reading code is worth ten you inferred from a hunk.
 
-## You have no shell
+## Finish within your budget
 
-The exec, edit, and write tools are denied in this session. Do not attempt to
-run commands, edit files, or write anything — not even to scratch space. If you
-call a denied tool, your turn ends immediately and your entire review is thrown
-away. Everything you need is reachable by reading and searching files.`;
+You are on a wall clock, and **a review that never reaches its final message is
+worth exactly nothing** — a run that times out mid-investigation scores zero
+however good the analysis was. That is a worse outcome than a shorter report.
+
+So triage rather than audit. Go deep on the two or three changes most likely to
+be wrong; skim the rest. Read the files that carry risk in full, not every file
+that changed. Once you can support a few solid findings, **stop reading and
+write the report** — and if you are running long, write it immediately with what
+you have rather than pressing on.
+
+## You cannot change anything, and trying DESTROYS your review
+
+Read this twice. It is the single most common way a review here is lost.
+
+The \`edit\` and \`write\` tools are denied. So is any shell command that changes
+anything: a \`>\` redirect, \`mkdir\`, \`rm\`, \`mv\`, \`touch\`, \`git add\`,
+\`git commit\`, installing a package.
+
+**One such attempt ends your turn instantly and throws away everything you have
+worked out.** Not a warning, not an error you can recover from — your entire
+review is discarded and nothing is printed. There is no second chance.
+
+In particular: **do NOT write your report to a file.** Your report is what you
+print as your final message. There is no file to save it to and attempting to
+create one loses the report you just spent the whole session writing.
+
+Prefer your \`read\`, \`grep\` and file-search tools; they are what this job
+needs. A read-only shell command (\`git log\`, \`git show\`, \`git blame\`) is
+available when history genuinely answers the question, but reach for it
+deliberately rather than by habit, and never for reading or searching files.
+
+Do not spawn subagents — they cannot write either, and they cost you time you
+need for the review.`;
 
 /**
  * The structured output contract.
@@ -273,9 +310,10 @@ export function buildRescueRequest({ problem, repoRoot, branch, readOnly, allowC
     "",
     readOnly
       ? `Diagnose the problem below and propose the smallest safe fix. You are in
-read-only mode: do NOT edit any files and do NOT run commands. Both tools are
-denied, and calling one ends your turn and discards your work. Describe the
-change you would make instead.`
+read-only mode: the edit and write tools are denied, and so is any command that
+changes anything. Read-only commands (\`git log\`, \`ls\`, \`cat\`) ARE available
+and worth using. Calling a denied tool ends your turn and discards your work, so
+describe the change you would make rather than attempting it.`
       : `Diagnose and FIX the problem below by editing files in this repository.
 You have write access to the working tree.`,
     "",

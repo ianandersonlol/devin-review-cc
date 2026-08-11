@@ -159,22 +159,55 @@ reading the code) or SUSPECTED (inferred from the diff).
 This is the property the tool rests on, so it is worth being precise about what
 enforces it — and what does not.
 
-1. **Non-interactive mode is the real guarantee.** Devin's Normal permission
-   mode auto-approves read-only tools and requires human approval for every
-   write and every shell command. In `--print` mode there is no human, so those
-   calls are rejected outright. A reviewer cannot write to your repository
-   because there is nobody there to say yes.
-2. **An explicit deny list**, passed via `--agent-config`, blocks `edit`,
-   `write`, `notebook_edit`, `exec`, `write_to_process`, `run_subagent`,
-   `request_scope`, `mcp_call_tool` and the `Write(**)` scope. Deny rules are
-   evaluated before allow rules.
-3. **System instructions** tell the model plainly that it has no shell.
-4. `allowed-tools` is also set, but **nothing here relies on it** — in testing it
-   did not actually restrict the toolset.
+1. **An explicit deny list** is the real guarantee. Passed as `permissions.deny`
+   in the config given to `--config`, it blocks `edit`, `write`,
+   `notebook_edit`, `write_to_process`, `run_subagent`, `request_scope`,
+   `mcp_call_tool` and the `Write(**)` scope. Deny beats allow and beats the
+   permission mode, and it held in testing against a repo-local
+   `.devin/config.json` that tried to allow what we deny.
+2. **Devin's command classifier**, via `--permission-mode auto`, is what governs
+   the *shell*. It judges each command: `ls` and `git log` are approved, `echo x
+   > f` is rejected.
+3. **The prompt** states the boundary, so the model does not waste a turn
+   discovering it. Since Devin removed `system-instructions` along with
+   `--agent-config`, this is now the only channel for it.
+
+**A reviewer has a read-only shell, not no shell.** This changed in 1.1.0, and
+the reason is that the old claim was never quite true: `auto` mode does not
+refuse the shell wholesale, it classifies commands. Denying `exec` outright cost
+the reviewer `git log` and `git blame` — genuinely useful for judging a diff — to
+buy a write guarantee that layer 2 already provides.
+
+`exec` therefore appears in **neither** the allow list nor the deny list, and
+that is load-bearing rather than an oversight. Putting a tool in
+`permissions.allow` *auto-approves* it: with `exec` allowed, Devin ran
+`echo pwned > file` and wrote the file even under `--permission-mode auto`.
+Leaving it unlisted is what keeps the classifier in charge. `write_to_process`
+stays denied for the mirror-image reason — the classifier judges a command
+*string*, so `exec("python3")` reads as read-only, and being able to type into
+that process afterwards would be an unclassified shell.
+
+None of this is taken on trust. `npm run test:live` runs a real reviewer against
+the installed CLI and asserts it cannot edit a file, cannot write one through the
+shell, and can still run `ls`.
 
 Mode selection lives in exactly one function (`resolveMode`) so the invariant can
 be tested in exactly one place. Only `rescue`, and only without `--read-only`,
 ever yields a writing mode.
+
+### The CLI moves underneath the plugin
+
+The Devin CLI auto-updates. In 3000.4.16 it removed `--agent-config`, which this
+plugin passed as the *first* argument on every invocation — so every model in a
+panel died at argv parsing with the same `unexpected argument` error, which reads
+like a broken plugin rather than a CLI that moved.
+
+So before any session starts, `devin-review` reads `devin --help` and checks that
+every flag it is about to pass still exists, refusing with exit 7 and naming the
+missing flag if not. `devin-review setup` reports the same thing. Probing beats
+pinning a version: it asks the binary in front of it what it actually supports.
+If `--help` cannot be read at all, the run proceeds — refusing to review code
+because a help screen would not parse is worse than the problem.
 
 ### What the permission model does *not* cover: repository hooks
 
@@ -203,14 +236,41 @@ to them is refusal rather than a guarantee it cannot make.
 
 ### The failure mode you will actually hit
 
-When Devin rejects an unapproved tool call in print mode, it **ends the turn and
-prints nothing at all** — exit 0, empty stdout, everything the model had worked
-out discarded. So a reviewer that idly reaches for `git log` does not produce a
-slightly worse review; it produces no review, and you pay for the tokens anyway.
+When Devin refuses a tool call in print mode, it **ends the turn and prints
+nothing at all** — exit 0, empty stdout, everything the model had worked out
+discarded. So a reviewer that reaches for a tool it does not have produces no
+review, and you pay for the tokens anyway.
 
-That is why the prompt is so insistent about the missing shell, and why the tool
-classifies this case as `blocked_tool` with an explanation rather than shrugging
-at an empty result. A single retry usually succeeds.
+The two ways this happens are not equally visible, which is the part that made it
+hard to diagnose. A call rejected for *needing confirmation* prints a warning to
+stderr. A call blocked by our own **deny list prints nothing whatsoever** — exit
+0, empty stdout, empty stderr — so classifying on stderr alone reported the deny
+list as a generic "returned no output" and sent you looking for a network fault.
+
+Every run therefore passes `--export`, which writes the session transcript as
+JSON, and that transcript is the only witness to what the model actually tried.
+The tool reads it, classifies the run as `blocked_tool`, and names the tool and
+the command:
+
+```
+swe-1-7 produced nothing [blocked_tool] — retrying once...
+```
+
+**Reviews retry once, automatically.** The failure is stochastic — on a fresh
+attempt the model usually does not reach for the same tool — and the retry is
+reported rather than silent, so a model that is reliably failing does not hide
+behind a review that looks like it cost one run. Only `blocked_tool` and
+unexplained `empty_output` are retried; a timeout is not, because retrying a run
+that already burned ten minutes doubles the wait for a cause that will still be
+true. **`rescue` never retries**, because it may already have edited files.
+
+A panel that loses a reviewer still exits 0 — two of three reviews are worth
+having — but says so **above the findings**, not only at the bottom:
+
+```
+> ⚠ 1 of 3 model(s) returned nothing (`swe-1-7` — blocked_tool).
+> Their silence is missing data, not agreement that the change is fine.
+```
 
 ## Rescue: the one command that writes
 

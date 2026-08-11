@@ -151,6 +151,40 @@ test("models that produced nothing are reported as missing data", () => {
   assert.match(text, /not as agreement/i);
 });
 
+test("a narrowed panel says so ABOVE the findings, not only at the bottom", () => {
+  // Position is the whole point, so position is what is asserted. The failure
+  // detail has always been printed further down; what it could not do is stop a
+  // reader taking "the other models flagged nothing here" as agreement, because
+  // by the time they reached it they had already read the findings.
+  const text = renderPanel({
+    results: [
+      result("a", [FINDING]),
+      { model: "b", ok: false, durationSeconds: 2, className: "blocked_tool", reason: "tried exec" },
+      { model: "c", ok: false, durationSeconds: 1, className: "quota", reason: "out of budget" },
+    ],
+    lens: "defect", scope: "s", warnings: [],
+  });
+
+  const notice = text.indexOf("2 of 3 model(s) returned nothing");
+  assert.ok(notice > -1, `expected a count of silent models, got:\n${text.slice(0, 400)}`);
+  assert.ok(notice < text.indexOf("| Model | Verdict |"), "the notice must precede the results table");
+  assert.ok(notice < text.indexOf("## Where to look first"), "the notice must precede the findings");
+
+  // Naming the models and why each one died, in the notice itself: "2 of 3
+  // returned nothing" without saying which is not actionable.
+  const banner = text.slice(notice, text.indexOf("| Model | Verdict |"));
+  assert.match(banner, /`b` — blocked_tool/);
+  assert.match(banner, /`c` — quota/);
+});
+
+test("a complete panel carries no missing-data notice at all", () => {
+  const text = renderPanel({
+    results: [result("a", [FINDING]), result("b", [FINDING])],
+    lens: "defect", scope: "s", warnings: [],
+  });
+  assert.ok(!/returned nothing/i.test(text), "a full panel must not warn about models that did run");
+});
+
 test("warnings reach the report body, not only stderr", () => {
   const text = renderPanel({
     results: [result("a", [FINDING])], lens: "defect", scope: "s",

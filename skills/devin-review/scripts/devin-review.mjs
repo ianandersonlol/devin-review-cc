@@ -17,18 +17,20 @@ import path from "node:path";
 
 import { parseArgs, USAGE, UsageError } from "./lib/args.mjs";
 import {
+  devinFlags,
   devinModels,
   DEVIN_URL,
   findDevin,
   isCorrelatedModel,
+  missingFlags,
   MODEL_DEFAULT,
   modelExists,
-  readOnlyAgentConfig,
-  rescueAgentConfig,
+  prepareSessionConfig,
+  readOnlyPermissions,
+  rescuePermissions,
   resolveMode,
   runDevin,
   stripFileLinks,
-  writeAgentConfig,
 } from "./lib/devin.mjs";
 import {
   collectDiff,
@@ -47,6 +49,7 @@ import {
   diversityWarnings,
   estimateCost,
   interpret,
+  runAndInterpret,
   runPanel,
 } from "./lib/panel.mjs";
 import { renderPanel, renderReport, renderUnstructured } from "./lib/render.mjs";
@@ -98,6 +101,39 @@ async function guardHooks(root, options) {
   raw("");
   raw("If these hooks are yours and you trust them, re-run with --allow-hooks.");
   die("refusing to start a session in a repository that declares hooks", 6);
+}
+
+/**
+ * Refuse to start when the installed CLI does not accept the arguments we are
+ * about to pass it.
+ *
+ * Devin auto-updates underneath the plugin. When `--agent-config` was removed,
+ * every model in a panel died at argv parsing with the same `unexpected
+ * argument` error, which reads like a broken plugin rather than a CLI that moved
+ * — and cost an afternoon to diagnose. One `devin --help` is local, instant, and
+ * turns that into a sentence naming the flag.
+ *
+ * Unknown is not failure: if `--help` cannot be read, missingFlags() returns
+ * nothing and the run proceeds. Refusing to review code because a help screen
+ * would not parse is worse than the problem it guards against.
+ */
+async function guardCliCompatibility(devinPath) {
+  const missing = missingFlags(await devinFlags(devinPath));
+  if (missing.length === 0) return;
+
+  raw(`devin-review: BLOCKED — your devin CLI does not accept: ${missing.join(", ")}`);
+  raw("");
+  raw("The Devin CLI has changed underneath this plugin, so every model would fail");
+  raw("identically at argument parsing. This is a plugin problem, not an account problem.");
+  raw("");
+  raw("Run `devin-review setup` for details, then update the plugin:");
+  raw(`  ${DEVIN_URL}`);
+  die("devin CLI is incompatible with this version of the plugin", 7);
+}
+
+/** Per-model transcript path; panel workers share a work dir, so it must differ. */
+function exportPathFor(workDir, model) {
+  return path.join(workDir, `transcript-${model.replace(/[^A-Za-z0-9._-]/g, "_")}.json`);
 }
 
 async function main() {
@@ -227,13 +263,15 @@ async function commandReview(options) {
     }
     for (const warning of warnings) log(`NOTE: ${warning}`);
 
-    // A repo-local Devin config outranks ours, and print mode has to waive the
-    // workspace-trust prompt. Say so rather than let it be a silent surprise.
+    // Print mode has to waive the workspace-trust prompt, so a repo-local Devin
+    // config is loaded without anyone being asked. Our deny list did hold
+    // against one that tried to allow what we deny — deny beats allow — but the
+    // file can still carry MCP servers and other settings, so say it is there.
     const repoConfigs = await detectRepoDevinConfig(root);
     if (repoConfigs.length > 0) {
       log(
-        `NOTE: this repository ships ${repoConfigs.join(", ")}, which Devin loads at higher ` +
-          "precedence than the read-only config used here. Check it if the repo is not yours.",
+        `NOTE: this repository ships ${repoConfigs.join(", ")}, which Devin loads alongside the ` +
+          "read-only config used here. Our deny list still applies; check the file if the repo is not yours.",
       );
     }
 
@@ -242,6 +280,10 @@ async function commandReview(options) {
     // Checked before the dry-run exit as well: a dry run that reports "OK" for a
     // repository a real run would refuse to enter is a misleading rehearsal.
     await guardHooks(root, options);
+    // Same reasoning for the CLI itself — "dry run OK" against a binary that
+    // would reject our very first argument is the most misleading rehearsal
+    // available. rosterPath is set even on a dry run, where devinPath is not.
+    if (rosterPath) await guardCliCompatibility(rosterPath);
 
     // Dry run stops here: the diff is assembled and the secret scan has passed,
     // but no Devin call is made and nothing is spent.
@@ -270,7 +312,7 @@ async function commandReview(options) {
     // that os.tmpdir() resolves to a per-user directory whose ACL we inherit.
     const requestFile = path.join(workDir, "review-request.md");
     await fs.writeFile(requestFile, request, { mode: 0o600 });
-    const agentConfigFile = await writeAgentConfig(workDir, readOnlyAgentConfig());
+    const configFile = await prepareSessionConfig(workDir, readOnlyPermissions());
 
     if (!options.quiet) {
       log(
@@ -282,15 +324,19 @@ async function commandReview(options) {
     }
 
     if (!isPanel) {
-      const result = await runDevin({
+      const model = options.models[0];
+      const interpreted = await runAndInterpret({
         devinPath,
         repoRoot: root,
         requestFile,
-        agentConfigFile,
-        model: options.models[0],
+        configFile,
+        exportFile: exportPathFor(workDir, model),
+        model,
         timeoutMs: options.timeoutMs,
+        keepLinks: options.keepLinks,
+        lens: options.lens,
+        onRetry: (first) => log(`${model} produced nothing [${first.className}] — retrying once...`),
       });
-      const interpreted = interpret(result, root, { keepLinks: options.keepLinks, lens: options.lens });
 
       if (!interpreted.ok) {
         log(`no review produced [${interpreted.className}]: ${interpreted.reason}`);
@@ -299,8 +345,7 @@ async function commandReview(options) {
         if (interpreted.className === "blocked_tool") {
           log("nothing was written to your repository — reviews cannot edit files.");
         }
-        if (result.stderr.trim() && interpreted.className === "exit_error") raw(result.stderr.trim());
-        return interpreted.className === "exit_error" ? (result.code || 1) : 3;
+        return interpreted.className === "exit_error" ? (interpreted.exitCode || 1) : 3;
       }
 
       // --json is available on every review path, not just the panel: the
@@ -346,12 +391,16 @@ async function commandReview(options) {
       devinPath,
       repoRoot: root,
       requestFile,
-      agentConfigFile,
+      configFile,
+      exportFileFor: (model) => exportPathFor(workDir, model),
       models: options.models,
       concurrency: options.concurrency,
       timeoutMs: options.timeoutMs,
       keepLinks: options.keepLinks,
       lens: options.lens,
+      onRetry: (model, first) => {
+        if (!options.quiet) log(`  ${model} produced nothing [${first.className}] — retrying once...`);
+      },
       onFinish: (result) => {
         if (options.quiet) return;
         log(
@@ -368,6 +417,17 @@ async function commandReview(options) {
       log("every model in the panel produced nothing:");
       for (const result of results) raw(`  ${result.model} [${result.className}]: ${result.reason}`);
       return 5;
+    }
+
+    // A partial panel still exits 0 — two of three reviews are worth having, and
+    // failing the command would throw them away. But it must not exit 0 QUIETLY:
+    // a silent reviewer is missing data, and the failure mode this guards against
+    // is a reader counting "nobody objected" as consensus. Said on stderr here
+    // and again in the report itself, because those reach different readers.
+    const silent = results.filter((r) => !r.ok);
+    if (silent.length > 0 && !options.quiet) {
+      log(`WARNING: ${silent.length} of ${results.length} model(s) returned nothing — missing data, not agreement:`);
+      for (const result of silent) log(`  ${result.model} [${result.className}]: ${result.reason}`);
     }
 
     if (options.json) {
@@ -460,6 +520,11 @@ async function commandRescue(options) {
     const mode = resolveMode(options.subcommand, options.readOnly, options.allowCommands);
 
     await guardHooks(root, options);
+    // Before the dry-run exit, for the same reason as review: a rehearsal that
+    // reports OK against a CLI which would reject our first argument is worse
+    // than no rehearsal. `devinPath` is null on a dry run, so resolve it here.
+    const compatPath = devinPath ?? (await findDevin());
+    if (compatPath) await guardCliCompatibility(compatPath);
 
     if (options.dryRun) {
       log(
@@ -483,11 +548,11 @@ async function commandRescue(options) {
     const requestFile = path.join(workDir, "rescue-request.md");
     await fs.writeFile(requestFile, request, { mode: 0o600 });
 
-    const agentConfigFile = await writeAgentConfig(
+    const configFile = await prepareSessionConfig(
       workDir,
       options.readOnly
-        ? readOnlyAgentConfig()
-        : rescueAgentConfig({ allowCommands: options.allowCommands }),
+        ? readOnlyPermissions()
+        : rescuePermissions({ allowCommands: options.allowCommands }),
     );
 
     // Snapshot BEFORE. The index lives in workDir — a scratch index inside the
@@ -504,11 +569,15 @@ async function commandRescue(options) {
       );
     }
 
+    // Deliberately runDevin and not runAndInterpret: a rescue that fails may
+    // already have edited files, so an automatic second attempt would act on a
+    // tree it did not expect. Reviews retry; rescue does not.
     const result = await runDevin({
       devinPath,
       repoRoot: root,
       requestFile,
-      agentConfigFile,
+      configFile,
+      exportFile: exportPathFor(workDir, options.models[0]),
       model: options.models[0],
       mode,
       timeoutMs: options.timeoutMs,
@@ -603,6 +672,13 @@ async function commandSetup(options) {
       `         models ${devin.responds ? `respond (${devin.modelCount} available)` : "did NOT respond"}` +
         (devin.defaultModelAvailable === false ? `; default ${MODEL_DEFAULT} is missing` : ""),
     );
+    out.push(
+      `         cli    ${
+        devin.compatible
+          ? "accepts every flag this plugin uses"
+          : `INCOMPATIBLE — missing ${devin.missingFlags.join(", ")}`
+      }`,
+    );
   }
   out.push(`  platform  ${environment.platform}`);
 
@@ -641,6 +717,9 @@ async function commandStatus(options) {
       devin.ok ? `${devin.version ?? "ok"} responding` : "NOT READY"
     } · ${environment.platform}`,
   );
+  if (devin.path && !devin.compatible) {
+    out.push(`       devin CLI is INCOMPATIBLE — it does not accept ${devin.missingFlags.join(", ")}`);
+  }
   if (devin.account?.plan) {
     out.push(`Devin: ${devin.account.email ?? "unknown user"} · ${devin.account.plan} plan · ${devin.modelCount ?? "?"} models`);
   }

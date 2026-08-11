@@ -51,17 +51,45 @@ test("the request carries the repo root so the reviewer knows where to read", ()
   assert.match(request, /repo at \/repo/);
 });
 
-test("the request tells the reviewer it has no shell", () => {
-  // Load-bearing: a denied tool call ends the turn and discards the whole
-  // review, so the model has to be told before it reaches for exec.
+test("the request draws the shell boundary where Devin actually draws it", () => {
+  // Load-bearing twice over. A denied tool call ends the turn and discards the
+  // whole review, so the model must be told before it reaches for one — and
+  // since Devin dropped `system-instructions` along with `--agent-config`, this
+  // prompt is now the ONLY place the boundary is stated.
+  //
+  // "Read-only shell", not "no shell": --permission-mode auto classifies each
+  // command rather than refusing all of them, so a reviewer told it had no
+  // shell would decline to run `git log` for no reason.
   const request = buildRequest(base);
-  assert.match(request, /You have no shell/i);
+  assert.match(request, /cannot change anything/i);
+  assert.match(request, /git log/, "the reviewer should know reading history is available");
+  assert.match(request, /`edit` and `write` tools are denied/i);
   assert.match(request, /thrown\s+away|discard/i);
 });
 
-test("both lenses carry the no-shell warning", () => {
+test("the reviewer is told not to write its report to a file", () => {
+  // Observed in a real panel: a model asked for a report reaches for somewhere
+  // to save it, and that single write attempt discards the finished review.
+  assert.match(buildRequest(base), /do NOT write your report to a file/i);
+});
+
+test("the reviewer is told a timeout scores zero, so it should triage", () => {
+  // A reviewer that reads exhaustively and never reaches its final message
+  // produces nothing at all, which is strictly worse than a shorter report.
+  const request = buildRequest(base);
+  assert.match(request, /stop reading and\s+write the report/i);
+  assert.match(request, /worth exactly nothing|scores zero/i);
+});
+
+test("the request never tells the reviewer it has no shell at all", () => {
+  // The old wording, kept as a negative assertion because it was true for a
+  // year and is the obvious thing to reintroduce by accident.
+  assert.ok(!/you have no shell/i.test(buildRequest(base)));
+});
+
+test("both lenses carry the shell boundary", () => {
   for (const lens of ["defect", "design"]) {
-    assert.match(buildRequest({ ...base, lens }), /no shell/i);
+    assert.match(buildRequest({ ...base, lens }), /READ-ONLY/i);
   }
 });
 
@@ -142,7 +170,9 @@ test("the rescue prompt demands the smallest change", () => {
 
 test("write mode and read-only mode give opposite editing instructions", () => {
   assert.match(buildRescueRequest(rescueBase), /You have write access/i);
-  assert.match(buildRescueRequest({ ...rescueBase, readOnly: true }), /do NOT edit any files/i);
+  const readOnly = buildRescueRequest({ ...rescueBase, readOnly: true });
+  assert.match(readOnly, /edit and write tools are denied/i);
+  assert.ok(!/You have write access/i.test(readOnly));
 });
 
 test("the problem statement reaches the prompt", () => {
@@ -173,8 +203,12 @@ test("with --allow-commands the rescue is invited to run the relevant test", () 
   assert.match(request, /single relevant test/i);
 });
 
-test("a read-only rescue is never told it may run commands", () => {
+test("a read-only rescue is never invited to change anything", () => {
   const request = buildRescueRequest({ ...rescueBase, readOnly: true, allowCommands: false });
   assert.ok(!/may run shell commands/i.test(request));
-  assert.match(request, /do NOT run commands/i);
+  // It MAY read: a read-only rescue runs on the reviewer permissions, which
+  // leave read-only commands available. What it must not think it can do is
+  // change something.
+  assert.match(request, /any command that\s+changes anything/i);
+  assert.match(request, /describe the change you would make/i);
 });

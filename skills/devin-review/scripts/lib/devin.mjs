@@ -5,6 +5,7 @@
 // several distinct ways a run can produce nothing useful.
 
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { run, which } from "./exec.mjs";
@@ -53,6 +54,51 @@ export async function devinVersion(devinPath) {
   const result = await run(devinPath, ["--version"], { timeout: 15000 });
   if (result.code !== 0) return null;
   return result.stdout.trim().split("\n")[0] || null;
+}
+
+/**
+ * The long flags this plugin puts on Devin's command line.
+ *
+ * Every one of these is load-bearing, so the set doubles as a compatibility
+ * contract with whatever `devin` happens to be installed. See devinFlags.
+ */
+export const REQUIRED_FLAGS = [
+  "--config",
+  "--prompt-file",
+  "--model",
+  "--permission-mode",
+  "--respect-workspace-trust",
+  "--export",
+];
+
+/**
+ * Read the long flags the installed CLI accepts, straight from `devin --help`.
+ *
+ * This exists because of how `--agent-config` disappeared. The CLI auto-updates
+ * underneath the plugin, the flag was removed in 3000.4.16, and because it was
+ * the first argument on the line every model in a panel died at argv parsing
+ * with the same opaque `unexpected argument` error. Three identical parser
+ * errors read like a broken plugin, not like a CLI that moved.
+ *
+ * Probing beats pinning a version number: it asks the binary in front of us what
+ * it actually supports, so a rename is reported as the one missing flag it is
+ * rather than as three failed reviews. `--help` is local, instant and free.
+ *
+ * Returns null when help could not be read at all, which callers treat as
+ * "unknown, proceed" rather than as a failure — refusing to run because we could
+ * not parse a help screen would be worse than the problem.
+ */
+export async function devinFlags(devinPath, timeout = 15000) {
+  const result = await run(devinPath, ["--help"], { timeout });
+  if (result.code !== 0) return null;
+  const found = `${result.stdout}\n${result.stderr}`.match(/--[a-z][a-z0-9-]*/g);
+  return found ? new Set(found) : null;
+}
+
+/** Which of REQUIRED_FLAGS this CLI does not know about. Empty when unknown. */
+export function missingFlags(flags) {
+  if (!flags) return [];
+  return REQUIRED_FLAGS.filter((flag) => !flags.has(flag));
 }
 
 export async function devinAuthStatus(devinPath, timeout = 20000) {
@@ -202,24 +248,43 @@ export function resolveMode(subcommand, readOnly, allowCommands = false) {
   return allowCommands ? MODE_WRITE_AND_RUN : MODE_WRITE;
 }
 
-// ── agent config ─────────────────────────────────────────────────────────────
+// ── session config ───────────────────────────────────────────────────────────
+//
+// Devin 3000.4.16 removed `--agent-config`. Its successor is `--config`, which
+// overrides the *user* config file wholesale and carries a top-level
+// `permissions: { deny, allow }` block. Verified against the live CLI: a deny
+// there blocks `exec` even under `--permission-mode dangerous`, while `read` and
+// `grep` keep working.
+//
+// The other half of the old agent config did NOT survive. `system-instructions`
+// is not read from the config file at any key — neither top-level nor under
+// `agent` — so everything the reviewer needs to be told now travels in the
+// prompt itself. See prompts.mjs.
 
 /**
- * Tools that can change something outside Devin's own head.
+ * Tools denied to a reviewer.
  *
- * The docs list a tidy five (read, edit, grep, glob, exec). The binary actually
- * exposes considerably more — `write`, `notebook_edit`, `run_subagent`,
- * `request_scope`, `write_to_process` and the MCP bridge among them — so a deny
- * list written from the documentation would leave real holes. This list came
- * from asking a live session to enumerate its own toolset.
+ * Note what is NOT here: `exec`. That is a deliberate reversal, and the reason
+ * is that the old assumption turned out to be false. `--permission-mode auto`
+ * does not block the shell wholesale — it classifies each command, so `ls` and
+ * `git log` run while `echo x > f` is rejected. Denying `exec` outright bought
+ * us a reviewer that could not read its own repository's history, in exchange
+ * for a guarantee that `auto` already provides for anything that writes.
+ *
+ * `write_to_process` stays denied precisely BECAUSE `exec` is allowed. The
+ * command classifier judges a command string, so `exec("python3")` looks
+ * read-only; being able to then type into that process would hand the model an
+ * unclassified shell and defeat the gate entirely.
+ *
+ * `kill_shell` is absent from both lists: it cannot change the repository, and
+ * every denied tool is a chance for the model to end its turn on one.
  */
-const MUTATING_TOOLS = [
+const REVIEWER_DENY = [
+  "Write(**)",
   "edit",
   "write",
   "notebook_edit",
-  "exec",
   "write_to_process",
-  "kill_shell",
   "run_subagent",
   "request_scope",
   "mcp_call_tool",
@@ -228,47 +293,41 @@ const MUTATING_TOOLS = [
 const READ_TOOLS = ["read", "grep", "find_file_by_name", "notebook_read"];
 
 /**
- * The agent config handed to a read-only reviewer.
+ * Permissions for a read-only reviewer.
  *
- * Four layers, in decreasing order of how much I trust them:
+ * Three layers now, in decreasing order of how much I trust them:
  *
- *  1. Non-interactive print mode. Devin rejects any tool call needing
- *     confirmation when there is no human to ask, and in Normal mode every
- *     write and every shell command needs confirmation. This is what actually
- *     makes a reviewer read-only, and it is verified in tests/readonly.test.mjs.
- *  2. `permissions.deny`. Deny is evaluated before ask and allow, so this holds
- *     even if something upstream grants the tool.
- *  3. `system-instructions`. Tells the model it has no shell, which mostly stops
- *     it from *trying* — see the reliability note on classifyEmptyOutput.
- *  4. `allowed-tools`. Present for completeness and forward compatibility. It
- *     did NOT restrict the toolset in testing, so nothing here relies on it.
+ *  1. `permissions.deny`. Deny wins over allow and over the permission mode, and
+ *     it held in testing against a repo-local `.devin/config.json` that tried to
+ *     allow what we denied. This is the real guarantee that a reviewer cannot
+ *     edit files.
+ *  2. Devin's own command classifier in `auto` mode, which is what stops a
+ *     *shell* command from writing. Confirmed by reproduction: `echo pwned > f`
+ *     is rejected, plain `echo` is not.
+ *  3. The prompt, which tells the model what it may and may not do so that it
+ *     does not waste a turn discovering the boundary. See classifyEmptyOutput.
+ *
+ * `exec` appears in NEITHER list, and that is load-bearing rather than an
+ * oversight. Putting a tool in `allow` AUTO-APPROVES it: with `exec` allowed,
+ * `echo pwned > file` wrote the file even under `--permission-mode auto`.
+ * Leaving it unlisted is what keeps layer 2 in charge of it.
  */
-export function readOnlyAgentConfig() {
+export function readOnlyPermissions() {
   return {
-    "allowed-tools": READ_TOOLS,
-    "system-instructions": [
-      "You are a READ-ONLY code reviewer running in a non-interactive session.",
-      "You have NO shell and NO write access. The exec, edit and write tools are denied.",
-      "Do not attempt to run commands, edit files, install anything, or touch git.",
-      "A denied tool call ends your turn and discards your entire review, so do not try.",
-      "Read, grep and file search are available and are all you need: reason from the code you read.",
-    ],
-    permissions: {
-      deny: ["Write(**)", ...MUTATING_TOOLS],
-      allow: [...READ_TOOLS, "Read(**)"],
-    },
+    deny: [...REVIEWER_DENY],
+    allow: [...READ_TOOLS, "Read(**)"],
   };
 }
 
 /**
- * The agent config for a rescue, which is allowed to edit the working tree.
+ * Permissions for a rescue, which is allowed to edit the working tree.
  *
  * Even here git stays off-limits: the safety model is "everything Devin did is
  * recoverable with git", and a rescue that can commit, stash or checkout can
  * destroy the very thing that makes it safe. Those denials are cheap because a
  * rescue has no legitimate reason to touch history.
  */
-export function rescueAgentConfig({ allowCommands }) {
+export function rescuePermissions({ allowCommands }) {
   // `Exec(git)` denies the whole command, not a list of subcommands.
   //
   // An earlier version enumerated `git commit`, `git push`, `git reset` and so
@@ -285,29 +344,92 @@ export function rescueAgentConfig({ allowCommands }) {
     "run_subagent", "request_scope"];
   if (!allowCommands) deny.push("exec", "write_to_process", "kill_shell");
 
-  const instructions = [
-    "You are fixing a specific problem in a git repository. Make the smallest change that works.",
-    "NEVER touch git history or staging: no commit, add, push, reset, checkout, rebase, stash or branch.",
-    "Do not refactor, reformat, rename, or 'improve' code you were not asked about.",
-    "Do not weaken or delete a test to make it pass.",
-  ];
-  instructions.push(
-    allowCommands
-      ? "You may run commands to reproduce the problem and verify your fix. Prefer running the single relevant test over broad suites."
-      : "You have NO shell in this run: the exec tool is denied. Do not attempt to run commands — a denied tool call ends your turn and discards your work. Report honestly that you could not verify the fix by running it.",
-  );
+  return { deny, allow: [...READ_TOOLS, "edit", "write", "Read(**)", "Write(**)"] };
+}
 
+/**
+ * Where the Devin CLI keeps the user's own config.
+ *
+ * We read it because `--config` REPLACES this file rather than layering over it,
+ * so anything we do not copy forward is simply absent for the run: `org_id`,
+ * proxy settings, and network rules among them. The one that bites immediately
+ * is `shell.setup_complete` — without it the CLI prints its "Welcome to Devin
+ * CLI!" banner straight into stdout, in front of the JSON we are about to parse.
+ */
+function userConfigCandidates() {
+  const home = os.homedir();
+  const paths = [];
+  if (process.env.DEVIN_REVIEW_USER_CONFIG) paths.push(process.env.DEVIN_REVIEW_USER_CONFIG);
+  if (process.env.XDG_CONFIG_HOME) paths.push(path.join(process.env.XDG_CONFIG_HOME, "devin", "config.json"));
+  if (process.platform === "win32" && process.env.APPDATA) {
+    paths.push(path.join(process.env.APPDATA, "devin", "config.json"));
+  }
+  if (home) paths.push(path.join(home, ".config", "devin", "config.json"));
+  return paths;
+}
+
+/**
+ * Read the user's Devin config, best effort.
+ *
+ * Never throws and never blocks a review. A missing or corrupt user config is
+ * not a reason to refuse to review code — it just means the session config is
+ * built from defaults, which works.
+ */
+export async function readUserConfig() {
+  for (const candidate of userConfigCandidates()) {
+    let text;
+    try {
+      text = await fs.readFile(candidate, "utf8");
+    } catch {
+      continue; // Not there; try the next location.
+    }
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    } catch {
+      // Unparseable. Fall through to defaults rather than guessing at a repair.
+    }
+    return {};
+  }
+  return {};
+}
+
+/**
+ * Build the config file for one session: the user's own settings, with our
+ * permissions forced on top.
+ *
+ * Merging rather than writing a minimal file keeps enterprise and proxied
+ * accounts working — `devin.org_id`, `proxy` and `sandbox.network` all live here
+ * and a review that quietly dropped them would fail in ways nobody would connect
+ * back to this plugin.
+ *
+ * `permissions` is overwritten, never merged. A user config that allowed `edit`
+ * must not be able to widen a reviewer, and since deny beats allow anyway the
+ * only safe reading of "the user also has opinions about permissions" is to
+ * ignore them for the duration of a review.
+ */
+export function buildSessionConfig(userConfig, permissions) {
+  const base = userConfig && typeof userConfig === "object" ? userConfig : {};
+  const shell = base.shell && typeof base.shell === "object" ? base.shell : {};
   return {
-    "system-instructions": instructions,
-    permissions: { deny, allow: [...READ_TOOLS, "edit", "write", "Read(**)", "Write(**)"] },
+    ...base,
+    // Suppresses the first-run welcome banner, which would otherwise land in
+    // stdout ahead of the review.
+    shell: { ...shell, setup_complete: true },
+    permissions,
   };
 }
 
-/** Write an agent config to the work dir and return its path. */
-export async function writeAgentConfig(workDir, config, name = "agent-config.json") {
+/** Write a session config to the work dir and return its path. */
+export async function writeSessionConfig(workDir, config, name = "session-config.json") {
   const file = path.join(workDir, name);
   await fs.writeFile(file, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
   return file;
+}
+
+/** Read the user config and write the session config for `permissions`. */
+export async function prepareSessionConfig(workDir, permissions, name) {
+  return writeSessionConfig(workDir, buildSessionConfig(await readUserConfig(), permissions), name);
 }
 
 // ── running ──────────────────────────────────────────────────────────────────
@@ -319,26 +441,35 @@ export async function writeAgentConfig(workDir, config, name = "agent-config.jso
  * argv: diffs routinely exceed what a command line will carry, and argv is world
  * readable in `ps` output on most systems.
  *
- * Two flags deserve explanation:
+ * Three flags deserve explanation:
  *
  *   --respect-workspace-trust false
  *     Print mode cannot display the interactive trust prompt, so it hard-fails
  *     in any directory the user has not already opened Devin in. Since the user
  *     explicitly invoked a review on this repository, the prompt would be pure
- *     friction. The safety it provides is preserved by the deny list, and the
- *     residual risk (a repo-local .devin/config.json outranking ours) is
- *     surfaced as a pre-flight warning instead of silently accepted.
+ *     friction. The safety it provides is preserved by the deny list, which was
+ *     tested against a repo-local .devin/config.json trying to allow what we
+ *     deny and held. Such a file is still surfaced as a pre-flight warning,
+ *     because it can carry MCP servers and other settings the deny list has
+ *     nothing to say about.
  *
- *   no --permission-mode for reviews
- *     Normal mode IS the read-only mode. We pass it explicitly anyway so the
+ *   --permission-mode
+ *     `auto` IS the read-only mode. We pass it explicitly anyway so the
  *     invocation states its own intent and a changed CLI default cannot quietly
  *     promote a reviewer into a writer.
+ *
+ *   --export
+ *     Writes the full session transcript as JSON. It is not a debugging luxury:
+ *     when Devin refuses a tool call it ends the turn with exit 0, empty stdout
+ *     AND empty stderr, so the transcript is the only place that records what
+ *     the model was actually trying to do. See readTranscriptDenials.
  */
 export async function runDevin({
   devinPath,
   repoRoot,
   requestFile,
-  agentConfigFile,
+  configFile,
+  exportFile,
   model,
   mode = MODE_READ_ONLY,
   timeoutMs,
@@ -353,13 +484,122 @@ export async function runDevin({
     "--respect-workspace-trust", "false",
     "--prompt-file", requestFile,
   ];
-  if (agentConfigFile) args.unshift("--agent-config", agentConfigFile);
+  if (configFile) args.unshift("--config", configFile);
+  if (exportFile) args.push("--export", exportFile);
   args.push("-p");
+
+  // A stale transcript from a previous attempt would be read as this attempt's
+  // evidence, which matters because retries reuse the same path.
+  if (exportFile) await fs.rm(exportFile, { force: true }).catch(() => {});
 
   const started = Date.now();
   const result = await run(devinPath, args, { cwd: repoRoot, timeout: timeoutMs });
   const durationSeconds = Math.round((Date.now() - started) / 1000);
-  return { ...result, durationSeconds, model };
+  const denials = exportFile ? await readTranscriptDenials(exportFile) : [];
+  return { ...result, durationSeconds, model, denials };
+}
+
+/**
+ * How a refused tool call reads in the exported transcript.
+ *
+ * Devin hands the model a plain-language sentence as the tool *result* — e.g.
+ * "Permission to run the command `echo x > f` was denied. The user needs to
+ * approve command execution." — and then ends the turn. Matching prose is
+ * unavoidably approximate, so this errs toward recognising a denial: the cost of
+ * a false positive is a slightly wrong explanation of an already-failed run,
+ * and the cost of a false negative is the silent "returned no output" that made
+ * this failure mode so hard to diagnose in the first place.
+ */
+const DENIAL_PATTERN =
+  /^(?:permission (?:to|denied)|write access to|read access to|.{0,80}?\bwas denied\b|subagent error: tool was rejected|tool was rejected)/i;
+
+/**
+ * Tools whose results are file or search CONTENT, never a permission verdict.
+ *
+ * Excluded because the first version of this parser scanned every tool result
+ * for denial-shaped prose, and then a reviewer read THIS FILE. Its own comments
+ * about denied tools matched, and the run was reported as
+ * `blocked_tool: read (lib/devin.mjs), exec (git diff)` — neither of which is
+ * denied, on a run where nothing had been refused at all. Any repository
+ * discussing permissions would have hit it; ours was merely guaranteed to.
+ */
+const CONTENT_TOOLS = new Set([
+  "read",
+  "grep",
+  "find_file_by_name",
+  "notebook_read",
+  "read_subagent",
+  "codebase_search",
+  "view_file",
+]);
+
+/**
+ * Recover, from an exported transcript, which tool calls Devin refused.
+ *
+ * Returns [] for every kind of "could not tell" — no file, unreadable, a schema
+ * we do not recognise. This is diagnostic colour on a run that already failed,
+ * so it must never be able to turn a bad review into a crash.
+ */
+export async function readTranscriptDenials(exportPath) {
+  let parsed;
+  try {
+    parsed = JSON.parse(await fs.readFile(exportPath, "utf8"));
+  } catch {
+    return [];
+  }
+  const steps = Array.isArray(parsed?.steps) ? parsed.steps : [];
+  const denials = [];
+
+  for (const step of steps) {
+    const calls = Array.isArray(step?.tool_calls) ? step.tool_calls : [];
+    const results = Array.isArray(step?.observation?.results) ? step.observation.results : [];
+    for (const result of results) {
+      const content = typeof result?.content === "string" ? result.content : "";
+      if (!content) continue;
+      const call =
+        calls.find((c) => c?.tool_call_id === result?.source_call_id) ?? (calls.length === 1 ? calls[0] : null);
+      const tool = call?.function_name ?? "unknown";
+
+      // Content-bearing tools are skipped outright, and the match is anchored to
+      // the FIRST LINE for everything else. A denial is a short sentence Devin
+      // puts at the top of the result; a file that merely talks about denials
+      // does not start with one. `exec` needs the anchor as much as `read` does
+      // — `git diff` output quotes whatever the diff touched.
+      if (CONTENT_TOOLS.has(tool)) continue;
+      const firstLine = content.trimStart().split("\n", 1)[0];
+      if (!DENIAL_PATTERN.test(firstLine)) continue;
+
+      denials.push({ tool, detail: describeCall(call), message: firstLine.trim() });
+    }
+  }
+  return denials;
+}
+
+/** The one argument worth quoting back for the common tools. */
+function describeCall(call) {
+  const args = call?.arguments;
+  if (!args || typeof args !== "object") return "";
+  for (const key of ["command", "path", "file", "file_path", "target_file"]) {
+    const value = args[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.length > 120 ? `${value.slice(0, 117)}...` : value;
+    }
+  }
+  return "";
+}
+
+/** One line naming what the model tried, for a blocked_tool explanation. */
+export function describeDenials(denials) {
+  if (!denials || denials.length === 0) return "";
+  const seen = new Map();
+  for (const denial of denials) {
+    const key = `${denial.tool}:${denial.detail}`;
+    if (!seen.has(key)) seen.set(key, denial);
+  }
+  return [...seen.values()]
+    .slice(0, 3)
+    .map((d) => (d.detail ? `${d.tool} (${d.detail})` : d.tool))
+    .join(", ");
 }
 
 /**
@@ -368,27 +608,51 @@ export async function runDevin({
  * Devin exits 0 with empty stdout in several unrelated situations, so a zero
  * exit is not evidence that a review happened. The one worth knowing about:
  *
- *   blocked_tool — the model called a tool that needed confirmation, there was
- *   no human to confirm it, and Devin ended the turn. Everything the model had
- *   already worked out is discarded. This is the dominant failure mode for a
- *   read-only reviewer that decides it would like a shell, which is exactly why
- *   the system instructions tell it so bluntly that it has none.
+ *   blocked_tool — the model called a tool that needed confirmation or was
+ *   denied, and Devin ended the turn. Everything the model had already worked
+ *   out is discarded.
+ *
+ * The two ways that happens are NOT equally visible, which is why `denials`
+ * exists. A confirmation rejection prints a warning; a `permissions.deny` hit
+ * prints nothing whatsoever — exit 0, empty stdout, empty stderr. Classifying on
+ * stderr alone therefore reported our own deny list as a generic "returned no
+ * output", sending the reader looking for a network fault. The exported
+ * transcript is the only witness, so it is consulted first.
  */
-export function classifyEmptyOutput(stderr, durationSeconds) {
+export function classifyEmptyOutput(stderr, durationSeconds, denials = []) {
   const text = (stderr ?? "").trim();
   const reason = tidyError(text) ||
     `devin returned no output (exit 0, empty stdout) after ${durationSeconds}s`;
 
-  if (/rejected a tool call that requires confirmation/i.test(text)) {
+  // A CLI that has moved on. Checked before everything else because it fails at
+  // argv parsing, so every model in a panel fails identically and none of the
+  // later classes describe it.
+  if (/unexpected argument|unrecognized (?:option|argument)|unknown (?:flag|option)/i.test(text)) {
+    const flag = text.match(/'(--[a-z0-9-]+)'/i)?.[1];
+    return {
+      className: "cli_mismatch",
+      reason:
+        `your devin CLI rejected ${flag ? `\`${flag}\`` : "an argument this plugin passes"}, which means ` +
+        "the CLI has changed underneath the plugin. Run `devin-review setup` to see which flags are " +
+        "missing, and update the plugin.",
+      retryable: false,
+    };
+  }
+
+  const blocked = denials.length > 0 || /rejected a tool call that requires confirmation/i.test(text);
+  if (blocked) {
     // Deliberately says nothing about whether files changed. This classifier is
     // shared with rescue, where Devin may have edited several files and *then*
     // reached for a denied verification command — so an assurance that nothing
     // was written would be flatly untrue exactly when it matters most. Write
     // state is reported from the tree snapshots, which actually know.
+    const tried = describeDenials(denials);
     return {
       className: "blocked_tool",
       reason:
-        "the model tried to use a tool it is not allowed (usually a shell command), " +
+        (tried
+          ? `the model called a tool it is not allowed — ${tried} — `
+          : "the model tried to use a tool it is not allowed (usually a shell command), ") +
         "and Devin ended the turn without printing anything. Re-running often succeeds; " +
         "a narrower --focus makes it less likely.",
       retryable: true,

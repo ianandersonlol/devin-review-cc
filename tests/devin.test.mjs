@@ -1,17 +1,25 @@
 import assert from "node:assert/strict";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
+  buildSessionConfig,
   classifyEmptyOutput,
+  describeDenials,
   isCorrelatedModel,
+  missingFlags,
   MODE_READ_ONLY,
   MODE_WRITE,
   MODE_WRITE_AND_RUN,
   modelExists,
   PANEL_DEFAULT,
   parseModels,
-  readOnlyAgentConfig,
-  rescueAgentConfig,
+  readOnlyPermissions,
+  readTranscriptDenials,
+  REQUIRED_FLAGS,
+  rescuePermissions,
   resolveMode,
   runDevin,
   stripFileLinks,
@@ -53,21 +61,39 @@ test("runDevin refuses an unrecognised permission mode outright", async () => {
   );
 });
 
-test("the read-only agent config denies every tool that can mutate anything", () => {
-  const config = readOnlyAgentConfig();
-  const deny = config.permissions.deny;
+test("the reviewer permissions deny every tool that can change the repository", () => {
+  const deny = readOnlyPermissions().deny;
   // Named individually rather than looped, so that a tool dropped from the
   // source list fails here instead of silently reducing the guarantee.
-  for (const tool of ["edit", "write", "notebook_edit", "exec", "write_to_process",
+  for (const tool of ["edit", "write", "notebook_edit", "write_to_process",
     "run_subagent", "request_scope", "mcp_call_tool"]) {
     assert.ok(deny.includes(tool), `expected ${tool} to be denied`);
   }
   assert.ok(deny.includes("Write(**)"), "expected a blanket write-scope denial");
 });
 
-test("the read-only agent config allows nothing that can mutate anything", () => {
-  const config = readOnlyAgentConfig();
-  for (const allowed of config.permissions.allow) {
+test("a reviewer never gets exec in EITHER permission list", () => {
+  // This is the subtle one, and it is why the assertion is about both lists.
+  //
+  // `permissions.allow` AUTO-APPROVES a tool: with `exec` allowed, Devin ran
+  // `echo pwned > file` and wrote the file even under --permission-mode auto.
+  // Denying it outright is also wrong — it costs the reviewer `git log` for a
+  // write guarantee that `auto` already provides. Unlisted is the only correct
+  // state, so both memberships are asserted rather than just the dangerous one.
+  const { allow, deny } = readOnlyPermissions();
+  assert.ok(!allow.includes("exec"), "allowing exec auto-approves writing commands");
+  assert.ok(!deny.includes("exec"), "denying exec costs read-only commands for nothing");
+});
+
+test("write_to_process stays denied precisely because exec is not", () => {
+  // The command classifier judges a command STRING, so `exec("python3")` reads
+  // as read-only. Typing into that process afterwards would be an unclassified
+  // shell, so this denial is what keeps the classifier meaningful.
+  assert.ok(readOnlyPermissions().deny.includes("write_to_process"));
+});
+
+test("the reviewer permissions allow nothing that can mutate anything", () => {
+  for (const allowed of readOnlyPermissions().allow) {
     assert.ok(
       !/^(edit|write|exec|notebook_edit|run_subagent|request_scope)$/.test(allowed),
       `${allowed} must not be allowed to a reviewer`,
@@ -76,11 +102,11 @@ test("the read-only agent config allows nothing that can mutate anything", () =>
   }
 });
 
-test("the rescue config bars git wholesale, not a list of subcommands", () => {
+test("the rescue permissions bar git wholesale, not a list of subcommands", () => {
   // An enumerated list missed `git clean`, which destroys untracked files —
   // the one class of change git cannot restore, and therefore the one that
   // breaks the "just revert it" recovery model outright.
-  const deny = rescueAgentConfig({ allowCommands: true }).permissions.deny;
+  const deny = rescuePermissions({ allowCommands: true }).deny;
   assert.ok(deny.includes("Exec(git)"), "git must be denied as a whole command");
   assert.ok(deny.includes("Exec(rm)") && deny.includes("Exec(sudo)"));
   assert.ok(deny.includes("Write(.git/**)"));
@@ -88,24 +114,92 @@ test("the rescue config bars git wholesale, not a list of subcommands", () => {
 
 test("no rescue mode ever grants a subagent or a permission escalation", () => {
   for (const allowCommands of [true, false]) {
-    const deny = rescueAgentConfig({ allowCommands }).permissions.deny;
-    assert.ok(deny.includes("run_subagent"), "a subagent could carry different permissions");
+    const deny = rescuePermissions({ allowCommands }).deny;
+    // Subagents were tested and DO inherit the session's denials — a subagent
+    // told to edit a file failed and the file was untouched. So this denial is
+    // not the load-bearing safety boundary it was once assumed to be; it stays
+    // because a rescue has no use for subagents and they burn wall clock, and
+    // because denying an unscoped tool is recoverable rather than turn-ending.
+    assert.ok(deny.includes("run_subagent"), "a rescue has no legitimate use for a subagent");
     assert.ok(deny.includes("request_scope"), "the agent must not be able to ask for more");
   }
 });
 
 test("rescue without --allow-commands denies the shell outright", () => {
-  const deny = rescueAgentConfig({ allowCommands: false }).permissions.deny;
+  const deny = rescuePermissions({ allowCommands: false }).deny;
   assert.ok(deny.includes("exec"));
-  assert.ok(!rescueAgentConfig({ allowCommands: true }).permissions.deny.includes("exec"));
+  assert.ok(!rescuePermissions({ allowCommands: true }).deny.includes("exec"));
 });
 
-test("the no-shell rescue tells the model it cannot verify, rather than letting it try", () => {
-  // A denied tool call discards the whole turn, so the instruction has to
-  // pre-empt the attempt rather than rely on the denial catching it.
-  const instructions = rescueAgentConfig({ allowCommands: false })["system-instructions"].join(" ");
-  assert.match(instructions, /NO shell/i);
-  assert.match(instructions, /ends your turn|discards/i);
+// ── the session config ───────────────────────────────────────────────────────
+
+test("the session config forces our permissions over whatever the user set", () => {
+  const merged = buildSessionConfig(
+    { permissions: { allow: ["edit", "write", "Write(**)"], deny: [] } },
+    readOnlyPermissions(),
+  );
+  assert.ok(!merged.permissions.allow.includes("edit"), "a user config must not widen a reviewer");
+  assert.ok(merged.permissions.deny.includes("edit"));
+});
+
+test("the session config preserves settings a review still needs", () => {
+  // --config REPLACES the user file rather than layering over it, so anything
+  // not copied forward is simply absent: org_id and proxy among them.
+  const merged = buildSessionConfig(
+    { version: 1, devin: { org_id: "org-abc" }, proxy: { url: "http://p" }, theme_mode: "dark" },
+    readOnlyPermissions(),
+  );
+  assert.equal(merged.devin.org_id, "org-abc");
+  assert.equal(merged.proxy.url, "http://p");
+  assert.equal(merged.theme_mode, "dark");
+});
+
+test("the session config always marks setup complete", () => {
+  // Without this the CLI prints its first-run welcome banner into stdout, ahead
+  // of the JSON report we are about to parse.
+  assert.equal(buildSessionConfig({}, readOnlyPermissions()).shell.setup_complete, true);
+  assert.equal(
+    buildSessionConfig({ shell: { startup_messages_remaining: 3 } }, readOnlyPermissions()).shell
+      .startup_messages_remaining,
+    3,
+  );
+});
+
+test("the session config survives a missing or junk user config", () => {
+  for (const input of [undefined, null, {}, "nonsense", 42]) {
+    const merged = buildSessionConfig(input, readOnlyPermissions());
+    assert.equal(merged.shell.setup_complete, true);
+    assert.ok(merged.permissions.deny.includes("edit"));
+  }
+});
+
+// ── CLI compatibility ────────────────────────────────────────────────────────
+
+test("every flag the plugin passes is checked against the installed CLI", () => {
+  // The regression this guards: --agent-config was removed, it was the FIRST
+  // argument on the line, and so every model in a panel died at argv parsing
+  // with an identical error that named the plugin rather than the CLI.
+  for (const flag of ["--config", "--prompt-file", "--model", "--permission-mode", "--export"]) {
+    assert.ok(REQUIRED_FLAGS.includes(flag), `${flag} must be part of the compatibility contract`);
+  }
+});
+
+test("missing flags are reported, and an unreadable help screen is not a failure", () => {
+  assert.deepEqual(missingFlags(new Set(REQUIRED_FLAGS)), []);
+  assert.deepEqual(missingFlags(new Set(REQUIRED_FLAGS.filter((f) => f !== "--config"))), ["--config"]);
+  // null means "could not read --help", which must not block a review.
+  assert.deepEqual(missingFlags(null), []);
+});
+
+test("a CLI that rejects our arguments is classified as a mismatch, not a dead model", () => {
+  const { className, reason, retryable } = classifyEmptyOutput(
+    "error: unexpected argument '--agent-config' found",
+    1,
+  );
+  assert.equal(className, "cli_mismatch");
+  assert.equal(retryable, false);
+  assert.match(reason, /--agent-config/);
+  assert.match(reason, /changed underneath/i);
 });
 
 // ── model roster parsing ─────────────────────────────────────────────────────
@@ -202,6 +296,93 @@ test("the blocked_tool explanation makes no claim about what was written", () =>
   const { reason } = classifyEmptyOutput("rejected a tool call that requires confirmation", 1);
   assert.ok(!/nothing was written/i.test(reason), `must not assert write state: ${reason}`);
   assert.match(reason, /not allowed|shell command/i);
+});
+
+test("a silent denial is still classified as blocked_tool, from the transcript", () => {
+  // The regression this pins down. A `permissions.deny` hit prints NOTHING —
+  // exit 0, empty stdout, empty stderr — so classifying on stderr alone reported
+  // our own deny list as a generic "returned no output". The exported transcript
+  // is the only witness that a tool was refused at all.
+  const { className, reason, retryable } = classifyEmptyOutput("", 30, [
+    { tool: "exec", detail: "echo pwned > f", message: "Permission to run the command was denied." },
+  ]);
+  assert.equal(className, "blocked_tool");
+  assert.equal(retryable, true);
+  assert.match(reason, /exec/);
+  assert.match(reason, /echo pwned > f/);
+});
+
+test("the blocked_tool explanation names the tool when the transcript knows it", () => {
+  assert.equal(describeDenials([{ tool: "edit", detail: "src/a.ts" }]), "edit (src/a.ts)");
+  assert.equal(describeDenials([{ tool: "exec", detail: "" }]), "exec");
+  assert.equal(describeDenials([]), "");
+  assert.equal(describeDenials(undefined), "");
+});
+
+test("repeated denials of the same call are not listed twice", () => {
+  // A model that retries the same denied command would otherwise produce a
+  // reason line consisting of the same string three times.
+  const denials = Array.from({ length: 4 }, () => ({ tool: "exec", detail: "git commit" }));
+  assert.equal(describeDenials(denials), "exec (git commit)");
+});
+
+test("reading a file that TALKS about denials is not itself a denial", async () => {
+  // The exact regression, found by running a real panel over this repository.
+  //
+  // The parser scanned every tool result for denial-shaped prose, a reviewer
+  // read lib/devin.mjs, and that file's own comments matched — so a run where
+  // nothing was refused reported `blocked_tool: read (lib/devin.mjs)`. Any repo
+  // discussing permissions would trip it; a review tool is the worst possible
+  // place for a false positive, because it fabricates a failure.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "devin-denial-"));
+  const file = path.join(dir, "transcript.json");
+  try {
+    await fs.writeFile(file, JSON.stringify({
+      steps: [{
+        tool_calls: [
+          { tool_call_id: "a", function_name: "read", arguments: { file_path: "lib/devin.mjs" } },
+          { tool_call_id: "b", function_name: "exec", arguments: { command: "git diff" } },
+        ],
+        observation: {
+          results: [
+            { source_call_id: "a", content: "<file-view>\n1| // the model called a tool it is not allowed\n2| // Permission to run was denied.\n</file-view>" },
+            { source_call_id: "b", content: "diff --git a/x b/x\n+// Write access to '/f' was denied." },
+          ],
+        },
+      }],
+    }));
+    assert.deepEqual(await readTranscriptDenials(file), []);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a real denial is still recognised, anchored to the first line", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "devin-denial-"));
+  const file = path.join(dir, "transcript.json");
+  try {
+    await fs.writeFile(file, JSON.stringify({
+      steps: [{
+        tool_calls: [{ tool_call_id: "a", function_name: "exec", arguments: { command: "echo x > f" } }],
+        observation: {
+          results: [{
+            source_call_id: "a",
+            content: "Permission to run the command `echo x > f` was denied. The user needs to approve command execution.",
+          }],
+        },
+      }],
+    }));
+    const denials = await readTranscriptDenials(file);
+    assert.equal(denials.length, 1);
+    assert.equal(denials[0].tool, "exec");
+    assert.equal(denials[0].detail, "echo x > f");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an absent or corrupt transcript yields no denials rather than throwing", async () => {
+  assert.deepEqual(await readTranscriptDenials("/nonexistent/transcript.json"), []);
 });
 
 test("quota exhaustion is classified as quota and marked unretryable", () => {

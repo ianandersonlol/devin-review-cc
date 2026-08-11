@@ -213,6 +213,7 @@ that; a half-applied edit is the case the user most needs to see.
 | 4 | blocked by the credential pre-flight | **do not** re-run with `--allow-secrets` on your own initiative — show the matched lines and ask the user |
 | 5 | every model in a panel failed | read the per-model reasons before retrying |
 | 6 | the repository declares lifecycle hooks | see below — do NOT pass `--allow-hooks` on your own initiative |
+| 7 | the installed `devin` CLI does not accept a flag the plugin passes | the CLI has moved underneath the plugin; report the named flag and tell the user to update the plugin. Nothing was spent, and no model ran |
 
 Exit 4 exists because the diff is sent to a third party. Waiving it is the
 user's call, never yours.
@@ -236,12 +237,17 @@ from someone else, it is the whole reason the check exists.
 ### The failure classes behind exit 3
 
 - **`blocked_tool`** — the model called a tool it is not allowed, almost always
-  a shell command. Devin has no human to ask for approval in print mode, so it
-  ends the turn and prints **nothing at all**; the work already done is
-  discarded. Nothing was written to the repository. A single retry usually
-  succeeds, and a narrower `--focus` makes it less likely. This is the dominant
-  failure mode and the reason the prompt tells the reviewer so bluntly that it
-  has no shell.
+  a command that would write something. Devin ends the turn and prints **nothing
+  at all**; the work already done is discarded. Nothing was written to the
+  repository. The message names the tool and the command it tried, recovered
+  from the session transcript. **Reviews already retried once automatically**
+  before you see this, so a `blocked_tool` that reaches you has failed twice —
+  do not simply re-run it. A narrower `--focus` makes it less likely, and a
+  different model usually just works. This is the dominant failure mode, and the
+  reason the prompt is so precise about which commands end a turn.
+- **`cli_mismatch`** — the `devin` CLI rejected an argument the plugin passes,
+  so the CLI has changed underneath the plugin. Not an account problem and not
+  retryable; report the named flag and suggest updating the plugin.
 - **`quota`** — the account is out of budget for that model. Retrying will not
   help; a free model (`swe-1-7`, `glm-5-2`) will.
 - **`auth`** — `devin auth login`, which is interactive and cannot be done for

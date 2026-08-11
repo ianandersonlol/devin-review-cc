@@ -120,6 +120,22 @@ export function renderPanel({ results, lens, scope, warnings }) {
   out.push(`Scope: ${scope}`);
   out.push("");
 
+  // Stated up front, not only in the failure section further down.
+  //
+  // A panel that loses a reviewer still prints a confident-looking report, and
+  // the reader's natural inference — "the other two found nothing there, so it
+  // is fine" — is exactly wrong: nobody looked. Putting the count above the
+  // findings makes the panel's actual width impossible to miss.
+  if (failed.length > 0) {
+    out.push(
+      `> ⚠ **${failed.length} of ${results.length} model(s) returned nothing** ` +
+        `(${failed.map((r) => `\`${r.model}\` — ${r.className}`).join("; ")}). ` +
+        "Their silence is missing data, not agreement that the change is fine. " +
+        "This panel is narrower than it looks; see the failure detail below.",
+    );
+    out.push("");
+  }
+
   out.push("| Model | Verdict | Findings | Time |");
   out.push("| --- | --- | --- | --- |");
   for (const result of results) {

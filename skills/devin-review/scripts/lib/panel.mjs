@@ -18,6 +18,58 @@ import { classifyEmptyOutput, isCorrelatedModel, runDevin, stripFileLinks, tidyE
 import { extractJson, normalizeReport } from "./findings.mjs";
 
 /**
+ * Failure classes worth spending a second run on.
+ *
+ * `blocked_tool` is here because it is the dominant reviewer failure and it is
+ * genuinely stochastic: the model reached for a tool it did not have, and on a
+ * fresh attempt it usually does not. `empty_output` joins it as the unexplained
+ * case — nothing to act on, so trying again is the only move left.
+ *
+ * `timeout` is pointedly NOT here even though interpret() marks it retryable for
+ * a human. Retrying a run that already burned ten minutes silently doubles the
+ * wall clock of a review the user is waiting on, and the reason it timed out
+ * (usually a diff too large) will still be true the second time.
+ */
+const RETRY_CLASSES = new Set(["blocked_tool", "empty_output"]);
+
+/**
+ * Run one model and interpret the result, retrying once if it produced nothing
+ * for a reason that a second attempt might not reproduce.
+ *
+ * The retry is deliberately confined to reviews. A rescue may have already
+ * edited files by the time it fails, and running it again would either duplicate
+ * those edits or act on a tree it did not expect — so rescue calls runDevin
+ * directly and this function is never in its path.
+ */
+export async function runAndInterpret({
+  repoRoot,
+  keepLinks = false,
+  lens = "defect",
+  retry = true,
+  onRetry,
+  runner = runDevin,
+  ...runOptions
+}) {
+  const attempt = async () => interpret(await runner({ repoRoot, ...runOptions }), repoRoot, { keepLinks, lens });
+
+  const first = await attempt();
+  if (!retry || first.ok || !RETRY_CLASSES.has(first.className)) return first;
+
+  onRetry?.(first);
+  const second = await attempt();
+
+  // Either way the user is told this took two runs. A silent retry that also
+  // failed would misreport the cost of the review, and a silent retry that
+  // succeeded would hide a reviewer that is reliably reaching for a denied tool.
+  if (second.ok) return { ...second, retried: true };
+  return {
+    ...second,
+    retried: true,
+    reason: `${second.reason} (retried once; the first attempt failed with ${first.className})`,
+  };
+}
+
+/**
  * Run `models` against the same request with bounded concurrency.
  *
  * Concurrency is bounded because each worker is a full agent session holding a
@@ -30,13 +82,16 @@ export async function runPanel({
   devinPath,
   repoRoot,
   requestFile,
-  agentConfigFile,
+  configFile,
+  exportFileFor,
   models,
   concurrency,
   timeoutMs,
   keepLinks = false,
   lens = "defect",
+  retry = true,
   onStart,
+  onRetry,
   onFinish,
   // Seam for tests: scheduling, ordering and failure isolation are the
   // interesting behaviour here, and none of it should require spawning five
@@ -58,15 +113,22 @@ export async function runPanel({
       // outcome this pool exists to prevent.
       try {
         onStart?.(model);
-        const result = await runner({
+        results[index] = await runAndInterpret({
           devinPath,
           repoRoot,
           requestFile,
-          agentConfigFile,
+          configFile,
+          // Panel workers share one work dir, so the transcript path must be
+          // per-model or the reviewers overwrite each other's evidence.
+          exportFile: exportFileFor?.(model),
           model,
           timeoutMs,
+          keepLinks,
+          lens,
+          retry,
+          onRetry: (first) => onRetry?.(model, first),
+          runner,
         });
-        results[index] = interpret(result, repoRoot, { keepLinks, lens });
       } catch (error) {
         // A throw here is ours, not Devin's — a bad mode, a spawn we could not
         // even attempt, a malformed result. Record it as this model's failure
@@ -120,7 +182,7 @@ export function interpret(result, repoRoot, { keepLinks = false, lens = "defect"
   // account is out of budget, not that the tool is broken — which tells the
   // user what to do next.
   if (result.code !== 0 || !result.stdout.trim()) {
-    const classified = classifyEmptyOutput(result.stderr, result.durationSeconds);
+    const classified = classifyEmptyOutput(result.stderr, result.durationSeconds, result.denials);
     const generic = classified.className === "empty_output";
 
     // An unexplained non-zero exit must not borrow the empty-output fallback

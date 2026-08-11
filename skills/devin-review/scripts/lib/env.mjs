@@ -5,10 +5,12 @@ import path from "node:path";
 
 import {
   devinAuthStatus,
+  devinFlags,
   devinModels,
   devinVersion,
   DEVIN_URL,
   findDevin,
+  missingFlags,
   MODEL_DEFAULT,
   modelExists,
 } from "./devin.mjs";
@@ -42,13 +44,18 @@ export async function probeEnvironment({
   const devinPath = await findDevin();
   // Version, models and auth are independent probes against the same binary;
   // running them concurrently makes `status` cost max() rather than sum().
-  const [version, roster, auth] = devinPath
+  const [version, roster, auth, flags] = devinPath
     ? await Promise.all([
         devinVersion(devinPath),
         devinModels(devinPath, modelsTimeout),
         devinAuthStatus(devinPath, modelsTimeout),
+        devinFlags(devinPath),
       ])
-    : [null, null, null];
+    : [null, null, null, null];
+  // The CLI auto-updates underneath the plugin. Reporting a flag it no longer
+  // accepts is the difference between "update the plugin" and an afternoon
+  // spent reading identical argv errors from three different models.
+  const absent = missingFlags(flags);
 
   const environment = {
     node: {
@@ -70,7 +77,9 @@ export async function probeEnvironment({
       loggedIn: auth ? auth.loggedIn : null,
       account: auth ? { email: auth.email, tier: auth.tier, plan: auth.plan } : null,
       defaultModelAvailable: roster ? modelExists(roster, MODEL_DEFAULT) : null,
-      ok: Boolean(devinPath) && Boolean(roster) && Boolean(auth?.loggedIn),
+      missingFlags: absent,
+      compatible: absent.length === 0,
+      ok: Boolean(devinPath) && Boolean(roster) && Boolean(auth?.loggedIn) && absent.length === 0,
     },
     repo: null,
   };
@@ -228,6 +237,15 @@ export function remediation(environment) {
       fix:
         "Check connectivity and `devin auth status`. If you are behind a proxy, " +
         "configure it in ~/.config/devin/config.json.",
+    });
+  } else if (!environment.devin.compatible) {
+    steps.push({
+      problem:
+        `Your devin CLI (${environment.devin.version ?? "unknown version"}) does not accept ` +
+        `${environment.devin.missingFlags.join(", ")}, which this plugin passes on every run.`,
+      fix:
+        "The CLI has changed underneath the plugin. Update devin-review to a version that " +
+        `matches your CLI; if it is already current, report the missing flag(s). See ${DEVIN_URL}`,
     });
   } else if (environment.devin.defaultModelAvailable === false) {
     steps.push({

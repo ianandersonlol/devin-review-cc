@@ -6,6 +6,7 @@ import {
   diversityWarnings,
   estimateCost,
   interpret,
+  runAndInterpret,
   runPanel,
 } from "../skills/devin-review/scripts/lib/panel.mjs";
 
@@ -62,6 +63,120 @@ test("interpret strips file links by default and keeps them on request", () => {
   const withLink = raw({ stdout: "[/repo/a.py:1](file:///repo/a.py)\n\n### Verdict: SHIP\n" });
   assert.match(interpret(withLink, "/repo").review, /`a\.py:1`/);
   assert.match(interpret(withLink, "/repo", { keepLinks: true }).review, /file:\/\/\/repo/);
+});
+
+// ── the retry ────────────────────────────────────────────────────────────────
+//
+// A reviewer that reaches for a denied tool loses its whole turn and prints
+// nothing. That is stochastic rather than deterministic, so one retry converts a
+// large share of silent failures into reviews — but it doubles the spend on a
+// model that is reliably failing, which is why the class list is narrow and the
+// retry is capped at exactly one.
+
+const silent = (model = "m") => ({ model, code: 0, stdout: "", stderr: "", durationSeconds: 3, denials: [] });
+const good = (model = "m") => ({ model, code: 0, stdout: DEFECT_REVIEW, stderr: "", durationSeconds: 4 });
+
+test("a blocked reviewer is retried once, and the retry's success is reported", async () => {
+  let calls = 0;
+  const result = await runAndInterpret({
+    repoRoot: "/repo",
+    model: "m",
+    runner: async () => {
+      calls += 1;
+      return calls === 1
+        ? { ...silent(), denials: [{ tool: "exec", detail: "git commit" }] }
+        : good();
+    },
+  });
+  assert.equal(calls, 2, "exactly one retry");
+  assert.ok(result.ok);
+  assert.equal(result.retried, true, "a silent retry would misreport what the review cost");
+});
+
+test("the retry is capped at one, and a second failure says so", async () => {
+  let calls = 0;
+  const result = await runAndInterpret({
+    repoRoot: "/repo",
+    model: "m",
+    runner: async () => {
+      calls += 1;
+      return { ...silent(), denials: [{ tool: "exec", detail: "git commit" }] };
+    },
+  });
+  assert.equal(calls, 2, "must not retry forever on a model that always fails");
+  assert.equal(result.ok, false);
+  assert.equal(result.retried, true);
+  assert.match(result.reason, /retried once/i);
+});
+
+test("a timeout is never retried automatically", async () => {
+  // interpret() marks a timeout retryable for a HUMAN. Retrying it here would
+  // silently double the wall clock of a review someone is waiting on, and the
+  // cause (usually a diff too large) would still be true the second time.
+  let calls = 0;
+  const result = await runAndInterpret({
+    repoRoot: "/repo",
+    model: "m",
+    runner: async () => {
+      calls += 1;
+      return { model: "m", code: 124, stdout: "", stderr: "", durationSeconds: 600, timedOut: true };
+    },
+  });
+  assert.equal(calls, 1);
+  assert.equal(result.className, "timeout");
+});
+
+test("failures that a second run cannot fix are not retried", async () => {
+  for (const [label, raw] of [
+    ["quota", { ...silent(), code: 1, stderr: "Error: resource_exhausted quota exhausted" }],
+    ["auth", { ...silent(), code: 1, stderr: "Error: unauthenticated, not logged in" }],
+    ["cli_mismatch", { ...silent(), code: 2, stderr: "unexpected argument '--config' found" }],
+  ]) {
+    let calls = 0;
+    const result = await runAndInterpret({
+      repoRoot: "/repo",
+      model: "m",
+      runner: async () => {
+        calls += 1;
+        return raw;
+      },
+    });
+    assert.equal(calls, 1, `${label} must not be retried`);
+    assert.equal(result.retried, undefined, label);
+  }
+});
+
+test("retry can be switched off entirely", async () => {
+  let calls = 0;
+  await runAndInterpret({
+    repoRoot: "/repo",
+    model: "m",
+    retry: false,
+    runner: async () => {
+      calls += 1;
+      return { ...silent(), denials: [{ tool: "exec", detail: "x" }] };
+    },
+  });
+  assert.equal(calls, 1);
+});
+
+test("panel workers each get their own transcript path", async () => {
+  // They share one work dir, so a shared export path would have each reviewer
+  // overwriting the evidence of why the others failed.
+  const seen = [];
+  await runPanel({
+    models: ["a", "b", "c"],
+    concurrency: 3,
+    repoRoot: "/repo",
+    devinPath: "devin",
+    requestFile: "/tmp/r",
+    exportFileFor: (model) => `/tmp/transcript-${model}.json`,
+    runner: async ({ model, exportFile }) => {
+      seen.push(exportFile);
+      return good(model);
+    },
+  });
+  assert.equal(new Set(seen).size, 3, `transcript paths collided: ${seen.join(", ")}`);
 });
 
 // ── the pool ─────────────────────────────────────────────────────────────────
