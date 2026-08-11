@@ -164,7 +164,7 @@ export async function runPanel({
  * review is a review, and discarding one because a model got its punctuation
  * wrong would lose exactly the finding you paid for.
  */
-export function interpret(result, repoRoot, { keepLinks = false, lens = "defect" } = {}) {
+export function interpret(result, repoRoot, { keepLinks = false, lens = "defect", canRetry = true } = {}) {
   const base = {
     model: result.model,
     durationSeconds: result.durationSeconds,
@@ -182,7 +182,7 @@ export function interpret(result, repoRoot, { keepLinks = false, lens = "defect"
   // account is out of budget, not that the tool is broken — which tells the
   // user what to do next.
   if (result.code !== 0 || !result.stdout.trim()) {
-    const classified = classifyEmptyOutput(result.stderr, result.durationSeconds, result.denials);
+    const classified = classifyEmptyOutput(result.stderr, result.durationSeconds, result.denials, { canRetry });
     const generic = classified.className === "empty_output";
 
     // An unexplained non-zero exit must not borrow the empty-output fallback

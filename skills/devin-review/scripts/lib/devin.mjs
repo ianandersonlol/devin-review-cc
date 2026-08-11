@@ -387,9 +387,14 @@ export async function readUserConfig() {
       const parsed = JSON.parse(text);
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
     } catch {
-      // Unparseable. Fall through to defaults rather than guessing at a repair.
+      // Unparseable. Keep looking rather than guessing at a repair.
     }
-    return {};
+    // Deliberately `continue`, not `return {}`. An earlier version stopped here,
+    // so a corrupt file at a high-precedence location (a stale
+    // DEVIN_REVIEW_USER_CONFIG, a half-written $XDG_CONFIG_HOME copy) discarded
+    // a perfectly good ~/.config/devin/config.json below it. That silently drops
+    // org_id and proxy — the exact settings this merge exists to preserve — and
+    // surfaces later as an auth or network error nobody traces back here.
   }
   return {};
 }
@@ -619,7 +624,7 @@ export function describeDenials(denials) {
  * output", sending the reader looking for a network fault. The exported
  * transcript is the only witness, so it is consulted first.
  */
-export function classifyEmptyOutput(stderr, durationSeconds, denials = []) {
+export function classifyEmptyOutput(stderr, durationSeconds, denials = [], { canRetry = true } = {}) {
   const text = (stderr ?? "").trim();
   const reason = tidyError(text) ||
     `devin returned no output (exit 0, empty stdout) after ${durationSeconds}s`;
@@ -647,14 +652,23 @@ export function classifyEmptyOutput(stderr, durationSeconds, denials = []) {
     // was written would be flatly untrue exactly when it matters most. Write
     // state is reported from the tree snapshots, which actually know.
     const tried = describeDenials(denials);
+    // The advice differs by caller, and getting this wrong is not cosmetic.
+    // "Re-running often succeeds" is true for a review and actively dangerous
+    // for a rescue, which may have edited files before it reached the denied
+    // tool — it would invite the user to do by hand the exact thing the code
+    // refuses to do automatically. Only the write-state claim was previously
+    // guarded here; the retry sentence was not.
     return {
       className: "blocked_tool",
       reason:
         (tried
           ? `the model called a tool it is not allowed — ${tried} — `
           : "the model tried to use a tool it is not allowed (usually a shell command), ") +
-        "and Devin ended the turn without printing anything. Re-running often succeeds; " +
-        "a narrower --focus makes it less likely.",
+        "and Devin ended the turn without printing anything. " +
+        (canRetry
+          ? "Re-running often succeeds; a narrower --focus makes it less likely."
+          : "Check the diff of what it changed before deciding whether to re-run — it may " +
+            "have edited files before it stopped, so a second run would not start from where you think."),
       retryable: true,
     };
   }

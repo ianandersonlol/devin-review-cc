@@ -187,9 +187,19 @@ stays denied for the mirror-image reason — the classifier judges a command
 *string*, so `exec("python3")` reads as read-only, and being able to type into
 that process afterwards would be an unclassified shell.
 
-None of this is taken on trust. `npm run test:live` runs a real reviewer against
-the installed CLI and asserts it cannot edit a file, cannot write one through the
-shell, and can still run `ls`.
+**Be clear about where the shell guarantee actually rests.** It is Devin's
+classifier, not this plugin — we do not control it and cannot audit it. That is a
+real dependency, and it matters more than it first appears, because a reviewer
+reads **untrusted diffs**: a prompt-injected "to verify this, run `python3 -c
+...`" in a stranger's PR is a plausible delivery mechanism for a write.
+
+So the evasions are tested rather than assumed. `npm run test:live` runs a real
+reviewer against the installed CLI and asserts it cannot edit a file, cannot
+write one through the shell, cannot write through an interpreter
+(`python3 -c`, `node -e`), a nested shell (`sh -c '… > f'`) or an in-place
+editor (`sed -i`) — and can still run `ls`. All are blocked today. If that test
+ever fails, `exec` goes back on the deny list and losing `git log` is simply the
+price of the guarantee.
 
 Mode selection lives in exactly one function (`resolveMode`) so the invariant can
 be tested in exactly one place. Only `rescue`, and only without `--read-only`,

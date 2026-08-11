@@ -18,6 +18,7 @@ import {
   parseModels,
   readOnlyPermissions,
   readTranscriptDenials,
+  readUserConfig,
   REQUIRED_FLAGS,
   rescuePermissions,
   resolveMode,
@@ -163,6 +164,48 @@ test("the session config always marks setup complete", () => {
       .startup_messages_remaining,
     3,
   );
+});
+
+test("a corrupt config at one location does not discard a valid one below it", async () => {
+  // Found by the panel. The loop `continue`s past an unreadable file but used to
+  // `return {}` on an unparseable one, so a stale DEVIN_REVIEW_USER_CONFIG or a
+  // half-written XDG copy silently dropped org_id and proxy from the real
+  // config — surfacing later as an auth error nobody traces back to this code.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "devin-cfg-"));
+  const corrupt = path.join(dir, "corrupt.json");
+  const valid = path.join(dir, "devin", "config.json");
+  const saved = { override: process.env.DEVIN_REVIEW_USER_CONFIG, xdg: process.env.XDG_CONFIG_HOME };
+  try {
+    await fs.writeFile(corrupt, "{ this is not json");
+    await fs.mkdir(path.dirname(valid), { recursive: true });
+    await fs.writeFile(valid, JSON.stringify({ devin: { org_id: "org-real" } }));
+
+    process.env.DEVIN_REVIEW_USER_CONFIG = corrupt;
+    process.env.XDG_CONFIG_HOME = dir;
+    assert.equal((await readUserConfig()).devin?.org_id, "org-real");
+  } finally {
+    if (saved.override === undefined) delete process.env.DEVIN_REVIEW_USER_CONFIG;
+    else process.env.DEVIN_REVIEW_USER_CONFIG = saved.override;
+    if (saved.xdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = saved.xdg;
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("rescue is never told that re-running usually works", () => {
+  // classifyEmptyOutput is shared with rescue, which by design is NEVER retried
+  // automatically because it may already have edited files. Advising the user to
+  // re-run by hand is the same hazard the code refuses to take on itself.
+  const denials = [{ tool: "exec", detail: "npm test" }];
+  const review = classifyEmptyOutput("", 5, denials, { canRetry: true });
+  const rescue = classifyEmptyOutput("", 5, denials, { canRetry: false });
+
+  assert.match(review.reason, /Re-running often succeeds/i);
+  assert.ok(!/Re-running often succeeds/i.test(rescue.reason), rescue.reason);
+  assert.match(rescue.reason, /diff of what it changed/i);
+  // Neither may claim nothing was written: in a rescue that would be false
+  // exactly when it matters most.
+  for (const { reason } of [review, rescue]) assert.ok(!/nothing was written/i.test(reason));
 });
 
 test("the session config survives a missing or junk user config", () => {

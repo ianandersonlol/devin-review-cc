@@ -624,7 +624,13 @@ async function commandRescue(options) {
     // Rescue is deliberately NOT on the findings schema: its output is a
     // narrative of what was done and why, which does not decompose into
     // addressable claims about code the way a review does.
-    const interpreted = interpret(result, root, { keepLinks: options.keepLinks, lens: "none" });
+    // canRetry: false — rescue is never retried automatically, so it must not
+    // tell the user that re-running usually works either.
+    const interpreted = interpret(result, root, {
+      keepLinks: options.keepLinks,
+      lens: "none",
+      canRetry: false,
+    });
 
     if (!interpreted.ok) {
       log(`no report produced [${interpreted.className}]: ${interpreted.reason}`);
