@@ -28,14 +28,16 @@ node "${CLAUDE_PLUGIN_ROOT}/skills/devin-review/scripts/devin-review.mjs" review
    - **4** — blocked by the secret-shape scan. Do NOT rerun with
      `--allow-secrets` on your own initiative. Show the user which lines matched
      and ask whether to scope the review to safe paths or waive the scan.
-   - **3** — no review was produced. The message names the class. The one worth
-     understanding is **`blocked_tool`**: the model reached for a tool it is not
-     allowed (nearly always a shell command), and Devin ends the turn without
-     printing anything when there is no human to approve it. Nothing was written
-     to the repo. A single retry usually succeeds, and a narrower `--focus`
-     makes it less likely. `quota` means the account is out of budget for that
-     model — retrying will not help, but a free model (`swe-1-7`, `glm-5-2`)
-     will. `auth` means `devin auth login`.
+   - **3** — no review was produced. The message names the class, the script
+     has ALREADY retried the retryable ones once (with a corrective note naming
+     what went wrong), and it kept the temp work dir — the printed path holds
+     the request and each attempt's session transcript if you need to see what
+     the model was doing. **`blocked_tool`** means it called a denied tool and
+     Devin ended the turn without printing anything; nothing was written to the
+     repo. **`empty_report`** means it finished on narration with no findings
+     or verdict. For either, a different model is the pragmatic next step.
+     `quota` means the account is out of budget for that model — a free model
+     (`swe-1-7`, `glm-5-2`) will work. `auth` means `devin auth login`.
    - **2** — setup problem (not a git repo, bad ref, unknown model, devin
      missing). Suggest `/devin:setup`, which diagnoses exactly what is wrong.
    - **6** — the repository declares Devin lifecycle **hooks**. Devin runs these

@@ -294,3 +294,252 @@ test("estimateCost reports incompleteness rather than guessing a missing price",
 test("estimateCost declines to invent a number without a roster", () => {
   assert.equal(estimateCost(["kimi-k3-high"], 1000, null), null);
 });
+
+// ── narration is not a review ────────────────────────────────────────────────
+
+import { isEmptyNarration } from "../skills/devin-review/scripts/lib/panel.mjs";
+
+test("short mid-investigation narration is a retryable empty_report, not a review", () => {
+  // The observed failure: kimi-k3-high completed in 242s and its entire final
+  // message was two sentences of narration. Rendering that under a "Reviewer:"
+  // heading presents zero review content as a review.
+  const result = interpret(
+    raw({ stdout: "Now let me check how uvicorn logs access lines to see whether the middleware runs." }),
+    "/repo",
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.className, "empty_report");
+  assert.equal(result.retryable, true);
+  assert.match(result.reason, /narration/i);
+  assert.match(result.reason, /uvicorn/, "the reason should quote what the model actually said");
+});
+
+test("a short prose verdict is kept as an unstructured review", () => {
+  const result = interpret(raw({ stdout: "SHIP. Nothing material after reading the call sites." }), "/repo");
+  assert.equal(result.ok, true);
+  assert.equal(result.format, "unstructured");
+});
+
+test("a short prose finding with a file:line citation is kept", () => {
+  const result = interpret(raw({ stdout: "The retry in billing.py:88 double-charges on timeout." }), "/repo");
+  assert.equal(result.ok, true);
+});
+
+test("a short clean review without the formal vocabulary is kept, not discarded", () => {
+  // Both panel reviewers (Gemini, GPT) caught the whitelist version throwing
+  // these away and billing a retry. A stated conclusion is a review even when
+  // it names no verdict, severity or line.
+  for (const clean of [
+    "No issues found after checking the changed call sites.",
+    "I found no material defects; the change looks correct.",
+    "Nothing of concern here. LGTM.",
+    "Reviewed the diff and the surrounding code — this looks fine to me.",
+  ]) {
+    const result = interpret(raw({ stdout: clean }), "/repo");
+    assert.equal(result.ok, true, `discarded a clean review: ${clean}`);
+    assert.equal(result.format, "unstructured");
+  }
+});
+
+test("long prose without JSON is always kept, whatever it says", () => {
+  // Even long UNFINISHED-sounding prose is kept: length alone is enough signal
+  // that the model did substantial work worth showing.
+  const prose = "Now let me check the logging path and then I will look at the retry. ".repeat(12);
+  const result = interpret(raw({ stdout: prose }), "/repo");
+  assert.equal(result.ok, true);
+  assert.equal(result.format, "unstructured");
+});
+
+test("a rescue narrative is never reclassified as an empty report", () => {
+  // Rescue output is a short markdown narrative by design; its lens has no
+  // verdict vocabulary and the heuristic must not touch it.
+  const result = interpret(raw({ stdout: "### Root cause\nA one-line fix." }), "/repo", { lens: "none" });
+  assert.equal(result.ok, true);
+});
+
+test("isEmptyNarration fires only on positively-unfinished output", () => {
+  // Unfinished: an announced next action (lead + investigation verb), no conclusion.
+  assert.equal(isEmptyNarration("Now let me look at the logging path.", "defect"), true);
+  assert.equal(isEmptyNarration("I'll check the call sites next.", "defect"), true);
+  // Not a review lens: never fires.
+  assert.equal(isEmptyNarration("Now let me look at this.", "none"), false);
+  // A stated conclusion, informal or formal, is kept.
+  assert.equal(isEmptyNarration("RECONSIDER: the shape is wrong", "design"), false);
+  assert.equal(isEmptyNarration("No issues found; looks correct to me.", "defect"), false);
+  // Terse output that is neither a conclusion nor an announced action is kept
+  // (inverted from the old whitelist, which would have discarded it).
+  assert.equal(isEmptyNarration("Hmm, this is interesting code.", "defect"), false);
+});
+
+test("a short finding phrased with 'going to' or a singular noun is NOT discarded", () => {
+  // A panel reviewer's false positives: "going to" as description (not "I'm
+  // going to"), and singular finding nouns the old lists missed.
+  for (const finding of [
+    "This change is going to break on Node 18 because fs.rm options changed.",
+    "There is a real bug here: the retry double-charges. No other issue.",
+    "The findings are minor but the null check on line 12 is missing.",
+    "I found no bug after tracing the call sites.",
+  ]) {
+    assert.equal(isEmptyNarration(finding, "defect"), false, `discarded a finding: ${finding}`);
+    assert.equal(interpret(raw({ stdout: finding }), "/repo").ok, true);
+  }
+});
+
+test("an empty_report is retried once and can succeed", async () => {
+  let calls = 0;
+  const result = await runAndInterpret({
+    repoRoot: "/repo",
+    model: "m",
+    runner: async () => {
+      calls += 1;
+      return calls === 1
+        ? { model: "m", code: 0, stdout: "Now let me check the logging path.", stderr: "", durationSeconds: 3 }
+        : good();
+    },
+  });
+  assert.equal(calls, 2);
+  assert.ok(result.ok);
+  assert.equal(result.retried, true);
+});
+
+// ── the corrective retry ─────────────────────────────────────────────────────
+
+import { promises as fsp } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+test("the retry request names the denied call and keeps the original request", async () => {
+  // The naive retry was measured failing: glm-5-2's first move is
+  // deterministically the denied one, so an identical second request died
+  // identically. The retry only buys anything if it says what went wrong.
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "devin-retry-test-"));
+  try {
+    const requestFile = path.join(dir, "review-request.md");
+    await fsp.writeFile(requestFile, "ORIGINAL REQUEST BODY");
+    const attempts = [];
+    let calls = 0;
+    const result = await runAndInterpret({
+      repoRoot: "/repo",
+      model: "m",
+      requestFile,
+      exportFile: path.join(dir, "transcript-m.json"),
+      runner: async ({ requestFile: rf, exportFile: ef }) => {
+        calls += 1;
+        attempts.push({ rf, ef });
+        return calls === 1
+          ? { ...silent(), denials: [{ tool: "exec", detail: 'python -c "import inspect"' }] }
+          : good();
+      },
+    });
+    assert.ok(result.ok);
+    assert.notEqual(attempts[1].rf, attempts[0].rf, "the retry must not resend the identical request");
+    const amended = await fsp.readFile(attempts[1].rf, "utf8");
+    assert.match(amended, /Second attempt/i);
+    assert.match(amended, /python -c/, "the note should name the exact call that killed attempt one");
+    assert.match(amended, /site-packages|node_modules/, "and say how to read dependencies instead");
+    assert.ok(amended.includes("ORIGINAL REQUEST BODY"), "the full original request must survive");
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the retry writes its transcript beside the first attempt's, not over it", async () => {
+  // The first attempt's transcript is the evidence of WHY there is a retry at
+  // all; runDevin deletes a stale export before running, so a shared path would
+  // destroy it.
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "devin-retry-test-"));
+  try {
+    const requestFile = path.join(dir, "review-request.md");
+    await fsp.writeFile(requestFile, "R");
+    const exports = [];
+    let calls = 0;
+    await runAndInterpret({
+      repoRoot: "/repo",
+      model: "m",
+      requestFile,
+      exportFile: path.join(dir, "transcript-m.json"),
+      runner: async ({ exportFile }) => {
+        calls += 1;
+        exports.push(exportFile);
+        return { ...silent(), denials: [{ tool: "exec", detail: "x" }] };
+      },
+    });
+    assert.notEqual(exports[1], exports[0]);
+    assert.match(exports[1], /-retry\.json$/);
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a retry without a request file still runs, unamended", async () => {
+  // retryOverrides is best-effort; the old behaviour is its fallback.
+  let calls = 0;
+  const result = await runAndInterpret({
+    repoRoot: "/repo",
+    model: "m",
+    runner: async () => {
+      calls += 1;
+      return calls === 1 ? { ...silent(), denials: [{ tool: "exec", detail: "x" }] } : good();
+    },
+  });
+  assert.equal(calls, 2);
+  assert.ok(result.ok);
+});
+
+test("runPanel threads the sandbox decision through to every runner", async () => {
+  const seen = [];
+  await runPanel({
+    models: ["a", "b"],
+    concurrency: 2,
+    repoRoot: "/repo",
+    devinPath: "devin",
+    requestFile: "/tmp/r",
+    sandbox: true,
+    runner: async ({ model, sandbox }) => {
+      seen.push(sandbox);
+      return good(model);
+    },
+  });
+  assert.deepEqual(seen, [true, true]);
+});
+
+test("a lowercase prose verdict is still a review (found by review)", () => {
+  // Gemini's HIGH: the verdict regex was case-sensitive, so "Verdict: ship —
+  // no defects found" was discarded as empty_report while "SHIP" survived.
+  const result = interpret(raw({ stdout: "Verdict: ship — no defects found after checking call sites." }), "/repo");
+  assert.equal(result.ok, true);
+});
+
+test("a citation with a long extension is still a review (found by review)", () => {
+  const result = interpret(raw({ stdout: "The oneof in api.proto:42 breaks old readers." }), "/repo");
+  assert.equal(result.ok, true);
+});
+
+test("the sandboxed retry note does not forbid interpreters", async () => {
+  // Found independently by self-review and by Gemini: the screened-path note
+  // says "do not launch an interpreter", which contradicts the sandboxed
+  // prompt that explicitly offers python one-liners.
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "devin-retry-test-"));
+  try {
+    const requestFile = path.join(dir, "review-request.md");
+    await fsp.writeFile(requestFile, "R");
+    const files = [];
+    let calls = 0;
+    await runAndInterpret({
+      repoRoot: "/repo",
+      model: "m",
+      requestFile,
+      sandbox: true,
+      runner: async ({ requestFile: rf }) => {
+        calls += 1;
+        files.push(rf);
+        return calls === 1 ? { ...silent(), denials: [{ tool: "edit", detail: "x.py" }] } : good();
+      },
+    });
+    const amended = await fsp.readFile(files[1], "utf8");
+    assert.ok(!/instead of launching an interpreter/i.test(amended));
+    assert.match(amended, /PRINTED as your final message/i);
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
+});

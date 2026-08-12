@@ -166,9 +166,27 @@ test("--panel still wins for a bare panel invocation", () => {
   assert.deepEqual(parseArgs(["review", "--panel"]).models, PANEL_DEFAULT);
 });
 
-test("--timeout 0 is rejected rather than silently disabling the timeout", () => {
-  // exec treats a falsy timeout as "no timeout", so 0 would hang forever.
-  assert.throws(() => parseArgs(["--timeout", "0"]), UsageError);
+test("the default timeout is a generous backstop, not a tight deadline", () => {
+  // High enough to clear any real review (one was measured at 828s), low enough
+  // to bound a hung run. A kill discards the whole review, so it sits well clear.
+  assert.equal(parseArgs([]).timeout, "45m");
+  assert.equal(parseArgs([]).timeoutMs, 45 * 60 * 1000);
+});
+
+test("--timeout none/off/0 explicitly disable the hard kill", () => {
+  for (const value of ["none", "off", "0", "NONE", "Off"]) {
+    const options = parseArgs(["--timeout", value]);
+    assert.equal(options.timeoutMs, null, value);
+    assert.equal(options.timeout, "none", value);
+  }
+});
+
+test("an explicit --timeout is still honoured as an opt-in backstop", () => {
+  assert.equal(parseArgs(["--timeout", "30m"]).timeoutMs, 1800000);
+});
+
+test("a malformed zero-ish duration is still rejected, only bare 0 disables", () => {
+  // `0` means "none"; `0s`/`0ms`/negatives are typos, not a disable request.
   assert.throws(() => parseArgs(["--timeout", "0s"]), UsageError);
   assert.throws(() => parseArgs(["--timeout", "0ms"]), UsageError);
 });
@@ -189,4 +207,13 @@ test("--concurrency is capped to catch a runaway fan-out typo", () => {
 test("repository hooks are only run with an explicit opt-in", () => {
   assert.equal(parseArgs([]).allowHooks, false);
   assert.equal(parseArgs(["--allow-hooks"]).allowHooks, true);
+});
+
+// ── artifact keeping and the sandbox escape hatch ────────────────────────────
+
+test("--keep-artifacts and --no-sandbox parse and default off", () => {
+  assert.equal(parseArgs([]).keepArtifacts, false);
+  assert.equal(parseArgs([]).noSandbox, false);
+  assert.equal(parseArgs(["--keep-artifacts"]).keepArtifacts, true);
+  assert.equal(parseArgs(["--no-sandbox"]).noSandbox, true);
 });

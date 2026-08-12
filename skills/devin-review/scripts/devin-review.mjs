@@ -30,6 +30,7 @@ import {
   rescuePermissions,
   resolveMode,
   runDevin,
+  sandboxSupported,
   stripFileLinks,
 } from "./lib/devin.mjs";
 import {
@@ -54,7 +55,7 @@ import {
 } from "./lib/panel.mjs";
 import { renderPanel, renderReport, renderUnstructured } from "./lib/render.mjs";
 import { scanForSecrets } from "./lib/secrets.mjs";
-import { createTempDir, removeTempDir } from "./lib/tempdir.mjs";
+import { createTempDir, preserveTempDir, removeTempDir, sweepStaleTempDirs } from "./lib/tempdir.mjs";
 
 const LARGE_DIFF_BYTES = 400000;
 
@@ -116,9 +117,12 @@ async function guardHooks(root, options) {
  * Unknown is not failure: if `--help` cannot be read, missingFlags() returns
  * nothing and the run proceeds. Refusing to review code because a help screen
  * would not parse is worse than the problem it guards against.
+ *
+ * Takes an already-fetched flag set so the same `devin --help` read decides both
+ * this check and whether `--sandbox` is passed, rather than shelling out twice.
  */
-async function guardCliCompatibility(devinPath) {
-  const missing = missingFlags(await devinFlags(devinPath));
+function guardCliCompatibility(flags) {
+  const missing = missingFlags(flags);
   if (missing.length === 0) return;
 
   raw(`devin-review: BLOCKED — your devin CLI does not accept: ${missing.join(", ")}`);
@@ -149,6 +153,12 @@ async function main() {
     process.stdout.write(`${USAGE}\n`);
     return 0;
   }
+
+  // Exit handlers cannot run on a hard kill, so earlier sessions leak their
+  // work dirs. Swept in the background — day-old dirs only, so a concurrent
+  // run's live directory and a just-kept failure artifact both survive — and
+  // never awaited: tidying must not delay or fail a review.
+  sweepStaleTempDirs().catch(() => {});
 
   if (options.subcommand === "setup") return commandSetup(options);
   if (options.subcommand === "status") return commandStatus(options);
@@ -185,7 +195,18 @@ async function commandReview(options) {
     die(`base ref '${options.base}' does not resolve in this repo`, 2);
   }
 
+  // Sandboxed wherever the platform AND the installed CLI can: commands are then
+  // contained by the OS (Seatbelt / bwrap+seccomp) instead of screened one at a
+  // time by an approval layer that ends the turn — silently, discarding the
+  // whole review — on every rejection. Windows has no sandbox and hard-fails on
+  // the flag; --no-sandbox opts out; and a devin too old to know the flag falls
+  // back rather than erroring. Resolved against the CLI flag set below.
+  const wantSandbox = process.platform !== "win32" && !options.noSandbox;
+
   const workDir = await createTempDir("devin-review-");
+  // Set when the work dir should outlive the run: the transcripts inside it are
+  // the only evidence of what a failed reviewer was doing.
+  let keepReason = options.keepArtifacts ? "--keep-artifacts" : "";
   try {
     let diff;
     try {
@@ -283,7 +304,18 @@ async function commandReview(options) {
     // Same reasoning for the CLI itself — "dry run OK" against a binary that
     // would reject our very first argument is the most misleading rehearsal
     // available. rosterPath is set even on a dry run, where devinPath is not.
-    if (rosterPath) await guardCliCompatibility(rosterPath);
+    // One `devin --help` read serves both the compatibility guard and the
+    // sandbox-support check.
+    const devinFlagSet = rosterPath ? await devinFlags(rosterPath) : null;
+    guardCliCompatibility(devinFlagSet);
+
+    const sandbox = wantSandbox && sandboxSupported(devinFlagSet);
+    if (wantSandbox && !sandbox) {
+      log(
+        "NOTE: this devin CLI does not accept --sandbox, so reviewers fall back to per-command " +
+          "screening (rejections end the turn). Update the CLI for OS-level containment.",
+      );
+    }
 
     // Dry run stops here: the diff is assembled and the secret scan has passed,
     // but no Devin call is made and nothing is spent.
@@ -291,7 +323,7 @@ async function commandReview(options) {
       log(
         `dry run OK — lens=${options.lens} models=${options.models.join(",")} ` +
           `scope=${diff.description} files=${diff.filesChanged} diff=${diffBytes}B ` +
-          "(no devin call, nothing spent)",
+          `sandbox=${sandbox ? "on" : "off"} (no devin call, nothing spent)`,
       );
       if (cost) log(`rough cost estimate: ${describeCost(cost)}`);
       return 0;
@@ -306,6 +338,7 @@ async function commandReview(options) {
       filesChanged: diff.filesChanged,
       focus: options.focus,
       diff: diff.text,
+      sandbox,
     });
 
     // 0600 on POSIX. On Windows the mode is advisory; the real protection is
@@ -318,6 +351,7 @@ async function commandReview(options) {
       log(
         `lens=${options.lens} models=${options.models.join(",")} scope=${diff.description} ` +
           `files=${diff.filesChanged} diff=${diffBytes}B timeout=${options.timeout}` +
+          ` sandbox=${sandbox ? "on" : "off"}` +
           (isPanel ? ` concurrency=${options.concurrency}` : ""),
       );
       if (cost && cost.total > 0.05) log(`rough cost estimate: ${describeCost(cost)}`);
@@ -332,13 +366,15 @@ async function commandReview(options) {
         configFile,
         exportFile: exportPathFor(workDir, model),
         model,
+        sandbox,
         timeoutMs: options.timeoutMs,
         keepLinks: options.keepLinks,
         lens: options.lens,
-        onRetry: (first) => log(`${model} produced nothing [${first.className}] — retrying once...`),
+        onRetry: (first) => log(`${model} produced nothing [${first.className}] — retrying once with a corrective note...`),
       });
 
       if (!interpreted.ok) {
+        keepReason ||= `the ${model} run failed`;
         log(`no review produced [${interpreted.className}]: ${interpreted.reason}`);
         // Only a reviewer can promise this; rescue reports write state from its
         // snapshots instead, because there it might not be true.
@@ -395,11 +431,12 @@ async function commandReview(options) {
       exportFileFor: (model) => exportPathFor(workDir, model),
       models: options.models,
       concurrency: options.concurrency,
+      sandbox,
       timeoutMs: options.timeoutMs,
       keepLinks: options.keepLinks,
       lens: options.lens,
       onRetry: (model, first) => {
-        if (!options.quiet) log(`  ${model} produced nothing [${first.className}] — retrying once...`);
+        if (!options.quiet) log(`  ${model} produced nothing [${first.className}] — retrying once with a corrective note...`);
       },
       onFinish: (result) => {
         if (options.quiet) return;
@@ -413,6 +450,9 @@ async function commandReview(options) {
     });
 
     const usable = results.filter((r) => r.ok);
+    if (results.some((r) => !r.ok)) {
+      keepReason ||= `${results.filter((r) => !r.ok).length} model(s) failed`;
+    }
     if (usable.length === 0) {
       log("every model in the panel produced nothing:");
       for (const result of results) raw(`  ${result.model} [${result.className}]: ${result.reason}`);
@@ -440,7 +480,20 @@ async function commandReview(options) {
     );
     return 0;
   } finally {
-    await removeTempDir(workDir);
+    // A failed run's work dir holds the only evidence of what went wrong — the
+    // request as sent and each attempt's exported transcript — so it is kept
+    // and named rather than destroyed. The startup sweep retires it after a
+    // day, request file (with the full diff) included.
+    if (keepReason) {
+      preserveTempDir(workDir);
+      log(
+        `kept work dir (${keepReason}): ${workDir} — holds the request as sent, the permission ` +
+          "config, and each attempt's transcript where one was exported (a hard timeout leaves none, " +
+          "since Devin exports only after a completed turn); swept after 24h",
+      );
+    } else {
+      await removeTempDir(workDir);
+    }
   }
 }
 
@@ -482,7 +535,17 @@ async function commandRescue(options) {
     );
   }
 
+  // Only a --read-only rescue is sandboxed: it runs on the reviewer permissions
+  // and gains exactly what reviewers gained. A writing rescue is not — the
+  // sandbox would break the verification commands --allow-commands exists for
+  // (installs and builds write caches outside the workspace), and its write
+  // guarantees come from the permission mode plus the tree snapshots instead.
+  // Resolved against the CLI flag set below (an old devin without --sandbox
+  // falls back rather than erroring).
+  const wantSandbox = options.readOnly && process.platform !== "win32" && !options.noSandbox;
+
   const workDir = await createTempDir("devin-rescue-");
+  let keepReason = options.keepArtifacts ? "--keep-artifacts" : "";
   try {
     // Context is the user's uncommitted work: often the cause, always a lead.
     let contextDiff = "";
@@ -523,14 +586,22 @@ async function commandRescue(options) {
     // Before the dry-run exit, for the same reason as review: a rehearsal that
     // reports OK against a CLI which would reject our first argument is worse
     // than no rehearsal. `devinPath` is null on a dry run, so resolve it here.
+    // One `devin --help` read serves the guard and the sandbox-support check.
     const compatPath = devinPath ?? (await findDevin());
-    if (compatPath) await guardCliCompatibility(compatPath);
+    const devinFlagSet = compatPath ? await devinFlags(compatPath) : null;
+    guardCliCompatibility(devinFlagSet);
+
+    const sandbox = wantSandbox && sandboxSupported(devinFlagSet);
+    if (wantSandbox && !sandbox) {
+      log("NOTE: this devin CLI does not accept --sandbox; the read-only rescue falls back to per-command screening.");
+    }
 
     if (options.dryRun) {
       log(
-        `dry run OK — rescue mode=${mode} model=${options.models[0]} branch=${branch} context=${
-          contextDiff ? `${Buffer.byteLength(contextDiff, "utf8")}B` : "none"
-        } (no devin call, nothing spent, no files touched)`,
+        `dry run OK — rescue mode=${mode} model=${options.models[0]} branch=${branch} ` +
+          `sandbox=${sandbox ? "on" : "off"} context=${
+            contextDiff ? `${Buffer.byteLength(contextDiff, "utf8")}B` : "none"
+          } (no devin call, nothing spent, no files touched)`,
       );
       raw(`Problem: ${options.problem}`);
       return 0;
@@ -544,6 +615,7 @@ async function commandRescue(options) {
       allowCommands: options.allowCommands,
       contextDiff,
       focus: options.focus,
+      sandbox,
     });
     const requestFile = path.join(workDir, "rescue-request.md");
     await fs.writeFile(requestFile, request, { mode: 0o600 });
@@ -580,6 +652,7 @@ async function commandRescue(options) {
       exportFile: exportPathFor(workDir, options.models[0]),
       model: options.models[0],
       mode,
+      sandbox,
       timeoutMs: options.timeoutMs,
     });
 
@@ -636,6 +709,7 @@ async function commandRescue(options) {
     });
 
     if (!interpreted.ok) {
+      keepReason ||= "the rescue run failed";
       log(`no report produced [${interpreted.className}]: ${interpreted.reason}`);
       if (result.stderr.trim() && interpreted.className === "exit_error") raw(result.stderr.trim());
       reportChanges();
@@ -647,7 +721,15 @@ async function commandRescue(options) {
     if (!options.quiet) log(`completed in ${interpreted.durationSeconds}s`);
     return 0;
   } finally {
-    await removeTempDir(workDir);
+    if (keepReason) {
+      preserveTempDir(workDir);
+      log(
+        `kept work dir (${keepReason}): ${workDir} — holds the request as sent, the permission ` +
+          "config, and the transcript if one was exported (a hard timeout leaves none); swept after 24h",
+      );
+    } else {
+      await removeTempDir(workDir);
+    }
   }
 }
 

@@ -94,8 +94,10 @@ half-applied edit is exactly the situation the user must know about.
 
 ## Notes
 
-- `--read-only` runs the same diagnosis with edits and commands both denied. It
-  is the right default for "explain this to me".
+- `--read-only` runs the same diagnosis on the reviewer permissions: edit
+  tools denied, and on macOS/Linux a read-only OS sandbox where commands run
+  but cannot write to the repository. It is the right default for "explain
+  this to me".
 - Your uncommitted diff is sent as context by default, since the problem is
   often in it. `--no-context` omits it. The credential pre-flight applies to
   that context exactly as it does for a review.

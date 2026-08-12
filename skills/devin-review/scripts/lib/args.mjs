@@ -53,6 +53,9 @@ export function parseArgs(argv) {
     modelExplicit: false,
     modelsExplicit: false,
     concurrency: 3,
+    // A generous default backstop, not a tight deadline: high enough to clear
+    // any real review, low enough to bound a hung run. `--timeout none` opts
+    // out (timeoutMs null → the spawn helper sets no timer). See TIMEOUT_DEFAULT.
     timeout: TIMEOUT_DEFAULT,
     timeoutMs: parseDuration(TIMEOUT_DEFAULT),
     base: "",
@@ -65,6 +68,8 @@ export function parseArgs(argv) {
     json: false,
     help: false,
     keepLinks: false,
+    keepArtifacts: false,
+    noSandbox: false,
     // rescue only
     problem: "",
     readOnly: false,
@@ -134,18 +139,24 @@ export function parseArgs(argv) {
       }
       case "--timeout": {
         const value = requireValue("--timeout", args);
+        // `none`/`off`/`0` all mean "no hard kill" — the default, but accepted
+        // explicitly so a user overriding a shell alias or a CI wrapper can say
+        // so. The spawn helper reads a falsy timeout as "no timer".
+        if (/^(none|off|0)$/i.test(value)) {
+          options.timeout = "none";
+          options.timeoutMs = null;
+          break;
+        }
         const ms = parseDuration(value);
         if (ms === null) {
           throw new UsageError(
-            "--timeout must be a duration like 30s, 10m, 1h (bare numbers are read as seconds)",
+            "--timeout must be a duration like 30s, 10m, 1h, or 'none' to disable " +
+              "(bare numbers are read as seconds)",
           );
         }
-        // Zero is rejected rather than passed along. The spawn helper treats a
-        // falsy timeout as "no timeout at all", so `--timeout 0` would ask for
-        // an instant deadline and get an unkillable run that hangs forever —
-        // the exact opposite of what was typed.
+        // A negative duration is nonsense; zero is handled as "none" above.
         if (ms <= 0) {
-          throw new UsageError("--timeout must be greater than zero");
+          throw new UsageError("--timeout must be greater than zero, or 'none' to disable");
         }
         options.timeout = value;
         options.timeoutMs = ms;
@@ -165,6 +176,12 @@ export function parseArgs(argv) {
         break;
       case "--keep-links":
         options.keepLinks = true;
+        break;
+      case "--keep-artifacts":
+        options.keepArtifacts = true;
+        break;
+      case "--no-sandbox":
+        options.noSandbox = true;
         break;
       case "--quiet":
         options.quiet = true;
@@ -270,11 +287,23 @@ Options:
   --panel             shorthand for --models ${PANEL_DEFAULT.join(",")}
   --concurrency N     how many panel models run at once (default: 3)
   --focus TEXT        extra instruction, e.g. --focus "auth and data loss"
-  --timeout DUR       per-model wall clock, e.g. 30s, 10m, 1h (default: ${TIMEOUT_DEFAULT})
+  --timeout DUR       per-model wall clock, e.g. 30s, 10m, 1h; 'none' to disable
+                      (default: ${TIMEOUT_DEFAULT}). A generous backstop for a HUNG run, not
+                      a deadline: a kill discards the whole review (Devin prints
+                      only at the end), so it sits well clear of a thorough one.
+                      Raise it for a large diff, or 'none' to remove it.
   --allow-secrets     skip the secret-shape pre-flight scan
   --allow-hooks       run even though the repo declares Devin lifecycle hooks
                       (they execute shell commands outside the read-only model)
   --keep-links        keep Devin's file:// annotations instead of flattening them
+  --keep-artifacts    keep the temp work dir (request, session transcripts) and
+                      print its path instead of deleting it; it is kept
+                      automatically whenever a model fails
+  --no-sandbox        do not run reviewers inside the OS sandbox; falls back to
+                      Devin's per-command approval, which rejects far more and
+                      ends the turn on each rejection (this is also the only
+                      mode Windows has, and the escape hatch if the Linux
+                      sandbox prerequisites — bubblewrap, socat — are missing)
   --quiet             suppress the metadata header on stderr
   --dry-run           build the diff and run the secret scan, then stop without
                       calling devin — shows exactly what would be reviewed and
@@ -289,9 +318,13 @@ rescue only:
   --no-context        do not include your uncommitted diff as context
   --problem TEXT      the problem statement (equivalent to bare words)
 
-review, challenge and panel are read-only by construction. They run Devin
-non-interactively, where every write and every shell command is rejected for
-want of a human to approve it, and they additionally deny those tools outright.
+review, challenge and panel are read-only by construction. On macOS and Linux
+they run inside Devin's OS sandbox (Seatbelt / bwrap+seccomp): shell commands
+run freely, but any write to the repository fails at the OS level. The edit and
+write tools are denied outright everywhere. On Windows, or with --no-sandbox,
+writes are instead stopped by denied tools plus Devin's per-command approval.
+The sandbox does not block network egress; reviews instruct the model not to
+use the network, but that is policy rather than enforcement.
 
 rescue runs with --permission-mode accept-edits, so it MODIFIES YOUR WORKING
 TREE. It cannot run commands unless you pass --allow-commands, which switches

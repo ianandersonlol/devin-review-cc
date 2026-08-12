@@ -23,6 +23,7 @@ import {
   rescuePermissions,
   resolveMode,
   runDevin,
+  sandboxSupported,
   stripFileLinks,
   tidyError,
 } from "../skills/devin-review/scripts/lib/devin.mjs";
@@ -524,4 +525,54 @@ test("parseModels reads a member line separated by a single tab", () => {
   assert.equal(models.length, 1);
   assert.equal(models[0].id, "kimi-k3-high");
   assert.equal(models[0].free, true);
+});
+
+// ── the sandbox ──────────────────────────────────────────────────────────────
+
+test("--sandbox is NOT part of the hard compatibility contract", () => {
+  // It is an enhancement: a devin too old to know the flag should fall back to
+  // screened mode, not be blocked with exit 7. So it is probed, not required.
+  assert.ok(!REQUIRED_FLAGS.includes("--sandbox"));
+});
+
+test("sandboxSupported reads the CLI flag set and fails safe when unknown", () => {
+  assert.equal(sandboxSupported(new Set(["--config", "--sandbox"])), true);
+  assert.equal(sandboxSupported(new Set(["--config"])), false, "an old CLI without the flag");
+  // Unknown resolves to NO: passing --sandbox to a CLI that lacks it would
+  // hard-fail the review at argv parsing, so fall back to the screened path.
+  assert.equal(sandboxSupported(null), false, "unknown support must not risk a cli_mismatch");
+});
+
+test("a missing sandbox prerequisite is classified with an actionable fix", () => {
+  const { className, reason, retryable } = classifyEmptyOutput(
+    "Error: sandbox setup failed: bubblewrap (bwrap) not found on PATH",
+    1,
+  );
+  assert.equal(className, "sandbox_unavailable");
+  assert.equal(retryable, false);
+  assert.match(reason, /--no-sandbox/);
+  assert.match(reason, /bubblewrap|devin sandbox setup/);
+});
+
+test("an ordinary empty run is NOT misread as a sandbox failure", () => {
+  // The word "sandbox" alone must not trigger it; a second signal is required.
+  assert.equal(classifyEmptyOutput("the sandbox reviewer found nothing", 5).className, "empty_output");
+});
+
+test("the session config drops the user's sandbox exclusions and keeps the rest", () => {
+  // sandbox.excluded lists commands the USER exempted from isolation for their
+  // own interactive sessions. Carrying that into an unattended review would run
+  // those commands uncontained; their network filtering, by contrast, only
+  // narrows what a reviewer can reach and is preserved.
+  const merged = buildSessionConfig(
+    { sandbox: { excluded: { "Exec(docker)": "allow" }, allowed_domains: ["example.com"], network_mode: "limited" } },
+    readOnlyPermissions(),
+  );
+  assert.equal(merged.sandbox.excluded, undefined);
+  assert.deepEqual(merged.sandbox.allowed_domains, ["example.com"]);
+  assert.equal(merged.sandbox.network_mode, "limited");
+});
+
+test("a config with no sandbox section gains none", () => {
+  assert.equal(buildSessionConfig({}, readOnlyPermissions()).sandbox, undefined);
 });

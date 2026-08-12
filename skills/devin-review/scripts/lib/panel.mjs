@@ -14,23 +14,101 @@
 // arithmetically, and reconciliation is left to the orchestrator, who can read
 // the actual code.
 
-import { classifyEmptyOutput, isCorrelatedModel, runDevin, stripFileLinks, tidyError } from "./devin.mjs";
-import { extractJson, normalizeReport } from "./findings.mjs";
+import { promises as fs } from "node:fs";
+import path from "node:path";
+
+import { classifyEmptyOutput, describeDenials, isCorrelatedModel, runDevin, stripFileLinks, tidyError } from "./devin.mjs";
+import { extractJson, normalizeReport, VERDICTS } from "./findings.mjs";
 
 /**
  * Failure classes worth spending a second run on.
  *
- * `blocked_tool` is here because it is the dominant reviewer failure and it is
- * genuinely stochastic: the model reached for a tool it did not have, and on a
- * fresh attempt it usually does not. `empty_output` joins it as the unexplained
- * case — nothing to act on, so trying again is the only move left.
+ * `blocked_tool` is here because it is the dominant reviewer failure and a
+ * second attempt — now carrying a note naming the call that killed the first —
+ * usually does not repeat it. `empty_report` is its cousin: the model finished
+ * but ended its turn on narration instead of a report, which a pointed reminder
+ * reliably fixes. `empty_output` joins them as the unexplained case — nothing
+ * to act on, so trying again is the only move left.
  *
  * `timeout` is pointedly NOT here even though interpret() marks it retryable for
  * a human. Retrying a run that already burned its whole budget silently doubles the
  * wall clock of a review the user is waiting on, and the reason it timed out
  * (usually a diff too large) will still be true the second time.
  */
-const RETRY_CLASSES = new Set(["blocked_tool", "empty_output"]);
+const RETRY_CLASSES = new Set(["blocked_tool", "empty_output", "empty_report"]);
+
+/**
+ * What to tell the model the second time, given how the first attempt died.
+ *
+ * This exists because the naive retry was measured not working: a model whose
+ * FIRST move is deterministically the denied one — glm-5-2 opens by inspecting
+ * installed packages through an interpreter — fails identically on an identical
+ * request. The retry only buys anything if it says what went wrong, so the note
+ * names the exact call when the transcript recorded it.
+ */
+function retryNote(first, sandbox) {
+  if (first.className === "blocked_tool") {
+    const tried = describeDenials(first.denials);
+    // The redirection differs by boundary. Sandboxed runs only lose turns to
+    // the denied edit/write tools, where the fix is "print, don't save";
+    // screened runs mostly lose them to shell commands, where the fix is
+    // "read the source on disk instead of executing anything".
+    const redirect = sandbox
+      ? "Your report is PRINTED as your final message — the edit and write tools do not exist " +
+        "for you, and there is no file to save anything to. Read code with your file tools and " +
+        "read-only shell commands; that is the whole job."
+      : "Everything this review needs can be reached with your read, grep and file-search tools " +
+        "— including installed dependencies, whose source you should read on disk " +
+        "(site-packages, node_modules, vendor or the equivalent) instead of launching an " +
+        "interpreter to import them.";
+    return (
+      "Your previous attempt was terminated the moment it called " +
+      (tried ? `a tool this session does not permit: ${tried}. ` : "a tool this session does not permit. ") +
+      "That call discarded everything you had worked out, and repeating it will discard this " +
+      `attempt too. Do not call it or anything like it again. ${redirect}`
+    );
+  }
+  if (first.className === "empty_report") {
+    return (
+      "Your previous attempt ended its turn on a short narrative message instead of a report, " +
+      "so it delivered nothing. Narration is not a deliverable. This time, finish the " +
+      "investigation and make your final message the report itself, in the JSON format " +
+      "specified below."
+    );
+  }
+  return "";
+}
+
+/**
+ * Assemble what changes on the second attempt: a request file that leads with
+ * the retry note, and a transcript path of its own so the first attempt's
+ * evidence is not overwritten by the very run investigating it.
+ *
+ * Best-effort by design — if the amended request cannot be written, the retry
+ * proceeds with the original one, which is exactly what it did before this
+ * mechanism existed.
+ */
+async function retryOverrides({ requestFile, exportFile, model, sandbox }, first) {
+  const overrides = {};
+  if (exportFile) {
+    overrides.exportFile = `${exportFile.replace(/\.json$/i, "")}-retry.json`;
+  }
+  const note = retryNote(first, sandbox);
+  if (!note || !requestFile) return overrides;
+  try {
+    const original = await fs.readFile(requestFile, "utf8");
+    const amended = `# Second attempt — read this first\n\n${note}\n\n---\n\n${original}`;
+    const retryFile = path.join(
+      path.dirname(requestFile),
+      `retry-${String(model ?? "model").replace(/[^A-Za-z0-9._-]/g, "_")}.md`,
+    );
+    await fs.writeFile(retryFile, amended, { mode: 0o600 });
+    overrides.requestFile = retryFile;
+  } catch {
+    // The unamended retry is still worth a shot.
+  }
+  return overrides;
+}
 
 /**
  * Run one model and interpret the result, retrying once if it produced nothing
@@ -50,13 +128,14 @@ export async function runAndInterpret({
   runner = runDevin,
   ...runOptions
 }) {
-  const attempt = async () => interpret(await runner({ repoRoot, ...runOptions }), repoRoot, { keepLinks, lens });
+  const attempt = async (overrides = {}) =>
+    interpret(await runner({ repoRoot, ...runOptions, ...overrides }), repoRoot, { keepLinks, lens });
 
   const first = await attempt();
   if (!retry || first.ok || !RETRY_CLASSES.has(first.className)) return first;
 
   onRetry?.(first);
-  const second = await attempt();
+  const second = await attempt(await retryOverrides(runOptions, first));
 
   // Either way the user is told this took two runs. A silent retry that also
   // failed would misreport the cost of the review, and a silent retry that
@@ -86,6 +165,7 @@ export async function runPanel({
   exportFileFor,
   models,
   concurrency,
+  sandbox = false,
   timeoutMs,
   keepLinks = false,
   lens = "defect",
@@ -122,6 +202,7 @@ export async function runPanel({
           // per-model or the reviewers overwrite each other's evidence.
           exportFile: exportFileFor?.(model),
           model,
+          sandbox,
           timeoutMs,
           keepLinks,
           lens,
@@ -169,6 +250,9 @@ export function interpret(result, repoRoot, { keepLinks = false, lens = "defect"
     model: result.model,
     durationSeconds: result.durationSeconds,
     exitCode: result.code,
+    // Carried on every result so the retry can name the call that killed the
+    // first attempt, and so a --json consumer can see what was refused.
+    denials: result.denials ?? [],
   };
 
   if (result.timedOut) {
@@ -216,10 +300,78 @@ export function interpret(result, repoRoot, { keepLinks = false, lens = "defect"
   const report = normalizeReport(extractJson(review), lens);
 
   if (!report) {
+    // Unparseable output is kept — but only when it is plausibly a REVIEW. A
+    // model that ends its turn on two sentences of mid-investigation narration
+    // ("Now let me check how uvicorn logs access lines...") has delivered
+    // nothing, and rendering that verbatim under a "Reviewer:" heading presents
+    // zero review content as a review. That is a failure, and a retryable one.
+    if (isEmptyNarration(review, lens)) {
+      const snippet = review.replace(/\s+/g, " ").slice(0, 160);
+      return {
+        ...base,
+        ok: false,
+        review: "",
+        className: "empty_report",
+        retryable: true,
+        reason:
+          `the model ended its turn with ${review.length} characters of narration instead of a ` +
+          `report: "${snippet}${review.length > 160 ? "…" : ""}"`,
+      };
+    }
     return { ...base, ok: true, review, report: null, format: "unstructured",
       reason: "no JSON object found in the output", className: "ok" };
   }
   return { ...base, ok: true, review, report, format: "json", className: "ok", reason: "" };
+}
+
+/**
+ * Is this non-JSON output UNFINISHED narration rather than a review?
+ *
+ * The bar for discarding is deliberately high, because renderUnstructured's
+ * promise — a review the parser could not read is still a review — is worth
+ * keeping. Two panel reviewers (Gemini and GPT) independently caught the first
+ * version discarding valid short reviews: it kept output only if it matched a
+ * whitelist, so a clean conclusion like "No issues found after reading the call
+ * sites" — no verdict word, no severity, no line — was thrown away and retried.
+ *
+ * So the logic is inverted. Everything is KEPT unless it positively reads as an
+ * interrupted turn: short, carrying no conclusion of any kind, AND ending on an
+ * announced-but-unperformed next action ("Now let me check…", "I'll look at…").
+ * That announced-action signal is what actually distinguishes the observed
+ * failure — a model narrating what it is ABOUT to do — from a model stating,
+ * however tersely, what it FOUND. Rescue never reaches this at all: its lens has
+ * no verdict vocabulary, and its narrative output is the deliverable.
+ */
+const NARRATION_MAX_CHARS = 500;
+
+// An announced next action: the model saying it is ABOUT to investigate. The
+// fingerprint is a first-person future/imperative lead ("let me", "I'll", "now
+// I will") FOLLOWED WITHIN A FEW WORDS BY an investigation verb. Requiring the
+// verb is what a panel reviewer's example forced: "This change is going to break
+// on Node 18" is a finding, not narration — a bare "going to" must not match, so
+// the lead alone is never enough.
+const UNFINISHED_SIGNAL =
+  /\b(?:let me|let'?s|i'?ll|i will|i'?m going to|i'?m about to|now i'?ll|now i will|next,? i'?ll)\s+(?:\w+\s+){0,3}?(?:check|look|examine|verify|trace|inspect|read|review|search|investigate|confirm|explore|scan|grep|see|start|begin|open|dig|analyz|analys|figure out|find out)\b/i;
+
+// Any stated conclusion, however informal. If the model said what it found, it
+// is a review — keep it, even without the formal vocabulary. Plurals and
+// singulars both (another reviewer catch: `finding` missed "findings", and the
+// "no X" list missed "no bug").
+const CONCLUSION_SIGNAL =
+  /\bfindings?\b|\bno (?:issues?|defects?|bugs?|problems?|concerns?)\b|\bnothing (?:wrong|of concern|material|to report|to flag|stood out)\b|\blooks (?:correct|fine|good|right|solid)\b|\bfound no\b|\bno material\b|\bLGTM\b/i;
+
+export function isEmptyNarration(text, lens) {
+  const verdicts = VERDICTS[lens];
+  if (!verdicts) return false;
+  if (text.length >= NARRATION_MAX_CHARS) return false;
+  // A stated verdict, severity, located finding, or informal conclusion all mean
+  // this is a review. Case-insensitive: "Verdict: ship" is still a verdict.
+  if (verdicts.some((verdict) => new RegExp(`\\b${verdict}\\b`, "i").test(text))) return false;
+  if (/\b(critical|high|medium|low)\b/i.test(text)) return false;
+  if (/\b[\w.-]+\.[A-Za-z0-9]{1,10}:\d+/.test(text)) return false;
+  if (CONCLUSION_SIGNAL.test(text)) return false;
+  // Discard ONLY when it positively looks like an interrupted investigation.
+  return UNFINISHED_SIGNAL.test(text);
 }
 
 /**

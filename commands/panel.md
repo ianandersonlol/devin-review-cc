@@ -32,7 +32,10 @@ once (default 3).
 
    A panel that partially fails still exits **0** and prints what it got. That
    is deliberate: two reviews are worth having. The report lists which models
-   returned nothing and why.
+   returned nothing and why — each retryable failure was already retried once,
+   with a corrective note — and the temp work dir is kept and named on stderr,
+   holding the request and every attempt's session transcript, so a silent or
+   timed-out model's behaviour can actually be inspected.
 
 3. Present the output. The report leads with a comparison table, then a
    **corroboration map** splitting findings into corroborated and single-source,

@@ -44,17 +44,26 @@ export const PANEL_DEFAULT = ["swe-1-7", "glm-5-2", "kimi-k3-high"];
 export const CORRELATED_PREFIXES = ["claude-", "claude_"];
 
 /**
- * Per-model wall clock.
+ * Per-model wall clock — a generous 45m backstop, not a tight deadline.
  *
- * Raised from 10m on measurement, not taste. Reviewers that finish do so
- * anywhere from 190s to 490s on a small diff — swe-1-7 was timed at 188s, 440s
- * and once past 720s on the SAME 1.3KB diff — so the spread is wide and the old
- * ceiling sat right on top of it. That is the worst place for a deadline: a
- * timeout discards the entire review, since Devin only prints its final message
- * at the end, so a run killed at 601s costs everything and returns nothing.
- * Waiting longer is cheap by comparison, and fast runs are unaffected.
+ * The point of the ceiling is only to catch a genuinely HUNG run (a stalled
+ * network, a stuck process, in a panel one dead worker blocking the others),
+ * not to hurry a thorough one. It is set high on purpose. A kill here is
+ * expensive — Devin prints its final message only at the very end, so a deadline
+ * discards the ENTIRE review, not a truncated version — and the sandbox only
+ * widened the honest spread by letting reviewers read more and run read-only
+ * tests (a real review was measured at 828s, and the old 15m default was
+ * actively guillotining good work). 45m sits well clear of any real review while
+ * still bounding a hang to something a person will wait out.
+ *
+ * A smarter idle timeout is not available: Devin exports its transcript only at
+ * turn boundaries, so a long single-turn investigation emits no progress signal
+ * to key a "killed only if stuck" rule on. So the choice is a fixed ceiling or
+ * none; a high fixed ceiling keeps the hang protection the Codex plugin forgoes
+ * without punishing thoroughness. `--timeout none` opts out entirely, and
+ * `--timeout 90m` (etc.) raises it for a genuinely large diff.
  */
-export const TIMEOUT_DEFAULT = "15m";
+export const TIMEOUT_DEFAULT = "45m";
 export const DEVIN_URL = "https://docs.devin.ai/cli";
 
 export async function findDevin() {
@@ -81,6 +90,32 @@ export const REQUIRED_FLAGS = [
   "--respect-workspace-trust",
   "--export",
 ];
+
+/**
+ * The sandbox flag is an ENHANCEMENT, not part of the compatibility contract.
+ *
+ * Kept out of REQUIRED_FLAGS deliberately: a devin old enough to predate
+ * `--sandbox` should still run — screened, the way it always did — not be
+ * blocked with exit 7. So sandbox support is probed separately and the flag is
+ * simply dropped when the installed CLI does not know it.
+ */
+export const SANDBOX_FLAG = "--sandbox";
+
+/**
+ * Does the installed CLI accept `--sandbox`?
+ *
+ * `null` flags means `--help` could not be read, and here that resolves to NO —
+ * unlike guardCliCompatibility, which treats null as "proceed". The asymmetry is
+ * deliberate and was a panel-review catch: guardCliCompatibility's permissive
+ * default can only fail to BLOCK, but passing `--sandbox` to a CLI that does not
+ * accept it makes the whole review hard-fail at argv parsing (cli_mismatch). So
+ * when support is unknown we fall back to the screened path — a working review
+ * beats a broken one, and the header prints `sandbox=off` so it is not silent.
+ */
+export function sandboxSupported(flags) {
+  if (!flags) return false;
+  return flags.has(SANDBOX_FLAG);
+}
 
 /**
  * Read the long flags the installed CLI accepts, straight from `devin --help`.
@@ -306,22 +341,32 @@ const READ_TOOLS = ["read", "grep", "find_file_by_name", "notebook_read"];
 /**
  * Permissions for a read-only reviewer.
  *
- * Three layers now, in decreasing order of how much I trust them:
+ * Four layers now, in decreasing order of how much I trust them:
  *
- *  1. `permissions.deny`. Deny wins over allow and over the permission mode, and
+ *  1. The OS sandbox (`--sandbox`, macOS Seatbelt / Linux bwrap+seccomp), where
+ *     the platform has one. `Deny(Write(**))` below subtracts the workspace
+ *     from the sandbox's writable set, so a shell command that writes fails at
+ *     the syscall with `Operation not permitted` — verified live: redirects,
+ *     python and node one-liners and sed -i all failed while the canary file
+ *     survived. Crucially the failed command does NOT end the turn; the model
+ *     reads the error and keeps reviewing.
+ *  2. `permissions.deny`. Deny wins over allow and over the permission mode, and
  *     it held in testing against a repo-local `.devin/config.json` that tried to
- *     allow what we denied. This is the real guarantee that a reviewer cannot
- *     edit files.
- *  2. Devin's own command classifier in `auto` mode, which is what stops a
- *     *shell* command from writing. Confirmed by reproduction: `echo pwned > f`
- *     is rejected, plain `echo` is not.
- *  3. The prompt, which tells the model what it may and may not do so that it
+ *     allow what we denied. On Windows and under --no-sandbox this is the real
+ *     guarantee that a reviewer cannot edit files.
+ *  3. Devin's own command classifier in `auto` mode, which is what stops a
+ *     *shell* command from writing when the sandbox is off. Confirmed by
+ *     reproduction: `echo pwned > f` is rejected, plain `echo` is not. With
+ *     --sandbox on, the CLI auto-approves shell commands and lets the sandbox
+ *     contain them instead — also verified live.
+ *  4. The prompt, which tells the model what it may and may not do so that it
  *     does not waste a turn discovering the boundary. See classifyEmptyOutput.
  *
  * `exec` appears in NEITHER list, and that is load-bearing rather than an
  * oversight. Putting a tool in `allow` AUTO-APPROVES it: with `exec` allowed,
- * `echo pwned > file` wrote the file even under `--permission-mode auto`.
- * Leaving it unlisted is what keeps layer 2 in charge of it.
+ * `echo pwned > file` wrote the file even under `--permission-mode auto`. On
+ * the sandboxed path that would not matter, but the SAME permission object
+ * serves Windows and --no-sandbox, where layer 3 must stay in charge of it.
  */
 export function readOnlyPermissions() {
   return {
@@ -423,17 +468,30 @@ export async function readUserConfig() {
  * must not be able to widen a reviewer, and since deny beats allow anyway the
  * only safe reading of "the user also has opinions about permissions" is to
  * ignore them for the duration of a review.
+ *
+ * `sandbox.excluded` is dropped for the same reason. It lists commands that run
+ * OUTSIDE the OS sandbox — an exemption the user granted to their own
+ * interactive sessions, where they are present to notice what an excluded
+ * command does. Carrying it into a sandboxed review would hand those commands
+ * to an unattended agent uncontained. The rest of the user's sandbox section
+ * (network filtering, notably) is preserved: narrowing what a reviewer can
+ * reach is their call to make.
  */
 export function buildSessionConfig(userConfig, permissions) {
   const base = userConfig && typeof userConfig === "object" ? userConfig : {};
   const shell = base.shell && typeof base.shell === "object" ? base.shell : {};
-  return {
+  const config = {
     ...base,
     // Suppresses the first-run welcome banner, which would otherwise land in
     // stdout ahead of the review.
     shell: { ...shell, setup_complete: true },
     permissions,
   };
+  if (base.sandbox && typeof base.sandbox === "object") {
+    const { excluded: _excluded, ...sandbox } = base.sandbox;
+    config.sandbox = sandbox;
+  }
+  return config;
 }
 
 /** Write a session config to the work dir and return its path. */
@@ -488,6 +546,7 @@ export async function runDevin({
   exportFile,
   model,
   mode = MODE_READ_ONLY,
+  sandbox = false,
   timeoutMs,
 }) {
   if (mode !== MODE_READ_ONLY && mode !== MODE_WRITE && mode !== MODE_WRITE_AND_RUN) {
@@ -501,6 +560,7 @@ export async function runDevin({
     "--prompt-file", requestFile,
   ];
   if (configFile) args.unshift("--config", configFile);
+  if (sandbox) args.push("--sandbox");
   if (exportFile) args.push("--export", exportFile);
   args.push("-p");
 
@@ -659,6 +719,22 @@ export function classifyEmptyOutput(stderr, durationSeconds, denials = [], { can
   const text = (stderr ?? "").trim();
   const reason = tidyError(text) ||
     `devin returned no output (exit 0, empty stdout) after ${durationSeconds}s`;
+
+  // The sandbox could not be set up. On Linux `--sandbox` needs bubblewrap and
+  // socat, and the CLI fails CLOSED without them rather than running
+  // unsandboxed — so a machine missing the prerequisites gets a clear fix
+  // (install them, or pass --no-sandbox) instead of a generic "no output".
+  // Checked early because its remedy is specific and unlike any other class's.
+  if (/\bsandbox\b/i.test(text) && /bubblewrap|bwrap|socat|seccomp|seatbelt|prerequisit|not (?:available|supported|set up)|could not (?:be )?(?:set up|initiali|resolv)|failed to (?:set up|start|initiali)/i.test(text)) {
+    return {
+      className: "sandbox_unavailable",
+      reason:
+        `the OS sandbox could not be started (${tidyError(text) || "no detail"}). On Linux it needs ` +
+        "bubblewrap and socat — run `devin sandbox setup` to see the prerequisites — or re-run with " +
+        "--no-sandbox to fall back to per-command screening.",
+      retryable: false,
+    };
+  }
 
   // A CLI that has moved on. Checked before everything else because it fails at
   // argv parsing, so every model in a panel fails identically and none of the

@@ -11,6 +11,14 @@ repository, so it greps for call sites and reads changed files in full rather
 than critiquing a diff in isolation. That is the point: it catches breakage in
 files the diff never touched.
 
+On macOS and Linux the reviewer runs inside **Devin's OS sandbox** (Seatbelt /
+bwrap+seccomp): its shell commands run freely — `git -C`, `rg`, interpreter
+one-liners — and any attempt to write to the repository fails at the OS level
+without costing the turn. On Windows, or with `--no-sandbox`, it falls back to
+Devin's per-command screening, which rejects far more and ends the turn on each
+rejection. The sandbox does **not** block network egress; the prompt forbids
+network use, but that is policy, not enforcement.
+
 What distinguishes this from the other review plugins is that **one binary
 fronts many vendors' models** — Cognition, OpenAI, Moonshot, Zhipu, Google,
 Anthropic. So a multi-vendor panel is a single command, and `panel` is the
@@ -59,11 +67,23 @@ this".
 --panel           shorthand for the default three-vendor panel
 --concurrency N   how many panel models run at once (default 3)
 --focus "TEXT"    steer the reviewer, e.g. --focus "auth and data loss"
---timeout DUR     per-model wall clock, e.g. 30s, 10m (default 15m)
+--timeout DUR     per-model wall clock, or 'none' (default: 45m). A generous
+                  backstop for a HUNG run, not a deadline: a kill discards the
+                  whole review (Devin prints only at the end), so it sits well
+                  clear of a thorough one — raise it for a large diff, 'none'
+                  to remove it
 -- <paths>        scope a large diff to specific paths
 --dry-run         show what would be reviewed; spends nothing
 --allow-secrets   waive the credential pre-flight (see below)
 --allow-hooks     proceed in a repo that declares Devin lifecycle hooks
+--keep-artifacts  keep the temp work dir (request, config, and any exported
+                  transcript); it is kept automatically whenever a model fails,
+                  and the path is printed on stderr. blocked_tool and
+                  empty_report leave a full transcript to inspect; a hard
+                  timeout leaves only the request and config, since Devin
+                  exports only after a completed turn
+--no-sandbox      fall back to per-command screening (automatic on Windows;
+                  the escape hatch if the Linux sandbox needs bubblewrap/socat)
 --json            machine-readable output (panel, models, setup, status)
 
 rescue only:
@@ -236,18 +256,30 @@ from someone else, it is the whole reason the check exists.
 
 ### The failure classes behind exit 3
 
-- **`blocked_tool`** — the model called a tool it is not allowed, almost always
-  a command that would write something. Devin ends the turn and prints **nothing
-  at all**; the work already done is discarded. Nothing was written to the
-  repository. The message names the tool and the command it tried, recovered
-  from the session transcript. **Reviews already retried once automatically**
-  before you see this, so a `blocked_tool` that reaches you has failed twice —
-  do not simply re-run it. A narrower `--focus` makes it less likely, and a
-  different model usually just works. This is the dominant failure mode, and the
-  reason the prompt is so precise about which commands end a turn.
+- **`blocked_tool`** — the model called a tool it is not allowed. Devin ends
+  the turn and prints **nothing at all**; the work already done is discarded.
+  Nothing was written to the repository. The message names the tool and the
+  command it tried, recovered from the session transcript. Under the sandbox
+  this is rare (shell commands no longer end turns; only the denied edit/write
+  tools do); on Windows or with `--no-sandbox` it is the dominant failure mode.
+  **Reviews already retried once automatically** — and the retry request leads
+  with a note naming the exact call that killed the first attempt — so a
+  `blocked_tool` that reaches you has failed twice. Do not simply re-run it;
+  read the kept work dir's transcripts, and consider a different model.
+- **`empty_report`** — the model finished normally but its final message was a
+  couple of sentences of mid-investigation narration with no findings and no
+  verdict: not a review, so it is not rendered as one. Retried once
+  automatically with a note demanding the report as the final message; if it
+  reaches you it happened twice, and a different model is the pragmatic fix.
+- **`sandbox_unavailable`** — `--sandbox` could not be set up. On Linux it needs
+  bubblewrap and socat and the CLI fails closed without them. The message names
+  the fix: install the prerequisites (`devin sandbox setup`) or re-run with
+  `--no-sandbox` for the screened path. macOS is unaffected. Not an account
+  problem, not retryable.
 - **`cli_mismatch`** — the `devin` CLI rejected an argument the plugin passes,
   so the CLI has changed underneath the plugin. Not an account problem and not
-  retryable; report the named flag and suggest updating the plugin.
+  retryable; report the named flag and suggest updating the plugin. (`--sandbox`
+  is exempt — a CLI too old to know it simply falls back to screened mode.)
 - **`quota`** — the account is out of budget for that model. Retrying will not
   help; a free model (`swe-1-7`, `glm-5-2`) will.
 - **`auth`** — `devin auth login`, which is interactive and cannot be done for
@@ -255,6 +287,11 @@ from someone else, it is the whole reason the check exists.
 - **`org_policy`** — an organisation policy blocks something. Report it as-is.
 - **`context_overflow`** — scope the diff with `-- <paths>` or pick a model with
   a larger context window.
+- **`timeout`** — the run hit the wall clock (default 45m) and, because Devin
+  prints only at the end, returned nothing. The default sits well clear of a
+  thorough run, so a timeout usually means genuinely hung — but if a large diff
+  legitimately needs longer, raise `--timeout` or set it to `none` rather than
+  retrying.
 
 ## Presenting the result
 
@@ -276,12 +313,27 @@ from someone else, it is the whole reason the check exists.
 - Paid models consume Devin usage quota; free models do not. A panel multiplies
   cost by the number of paid models in it — the script prints a rough estimate
   before running, and `--dry-run` prints it and stops.
-- Reviews are synchronous and measured at roughly 190–640 seconds on a small
-  diff, with wide variance between models; a panel takes
-  about as long as its slowest member. If you need one to run without blocking,
-  launch it as a background task from the host agent.
-- The reviewer's read-only property comes from Devin rejecting unapproved tool
-  calls in non-interactive mode, reinforced by an explicit deny list. It is
-  covered by tests in `tests/devin.test.mjs`; if you change how modes are
-  resolved, those tests are the guard.
+- Reviews are synchronous and run at their own pace — measured from ~190s to
+  past 900s on the same diff, and longer now that a sandboxed reviewer can read
+  more and run read-only tests. **The default timeout is a generous 45m
+  backstop, not a deadline:** a wall-clock kill discards the entire review
+  (Devin prints only at the end), so it sits well clear of any thorough run and
+  only catches a genuinely hung one. Raise it for a large diff, or `--timeout
+  none` to remove it. A panel takes about as long as its slowest member, and one
+  hung model blocks the others until the backstop fires — so launch a review as
+  a background task so it does not block. An interactive hang is also handled by
+  Ctrl+C, which cleans up the temp dir.
+- The reviewer's read-only property is layered: the OS sandbox contains shell
+  writes where the platform has one (verified live: redirects, `python -c`,
+  `node -e` and `sed -i` writes all fail with `Operation not permitted` while
+  the canary survives), the deny list stops the edit/write tools everywhere,
+  and Devin's per-command screening covers the shell on Windows and under
+  `--no-sandbox`. Covered by `tests/devin.test.mjs` and the live suite
+  (`npm run test:live`); if you change how modes or permissions are resolved,
+  those tests are the guard.
+- When any model fails, the temp work dir is kept and its path printed — the
+  request as sent, the permission config, and each attempt's transcript where
+  Devin exported one. A `blocked_tool` or `empty_report` run completes a turn
+  and leaves a transcript; a hard `timeout` is killed mid-turn and leaves only
+  the request and config. Swept automatically after 24 hours.
 - Tests: `npm test` at the repo root (`node --test`), no dependencies required.
