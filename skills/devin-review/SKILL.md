@@ -331,6 +331,14 @@ from someone else, it is the whole reason the check exists.
   `--no-sandbox`. Covered by `tests/devin.test.mjs` and the live suite
   (`npm run test:live`); if you change how modes or permissions are resolved,
   those tests are the guard.
+- Devin imports the user's `~/.claude/CLAUDE.md` into every session as an
+  always-on rule, with no off switch. If that file documents delegation
+  (`/agy:review`, `/codex:adversarial-review`), a reviewer may read it as
+  instructions for itself and try to outsource the review — observed live.
+  The request tells reviewers those imported rules are not addressed to them,
+  and the permission config denies `agy`, `codex`, `claude`, `gemini` and
+  `devin` as whole commands, so the attempt fails loudly as `blocked_tool`
+  instead of returning another vendor's review under this model's name.
 - When any model fails, the temp work dir is kept and its path printed — the
   request as sent, the permission config, and each attempt's transcript where
   Devin exported one. A `blocked_tool` or `empty_report` run completes a turn

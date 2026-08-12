@@ -114,6 +114,26 @@ test("the rescue permissions bar git wholesale, not a list of subcommands", () =
   assert.ok(deny.includes("Write(.git/**)"));
 });
 
+test("reviewer and rescue both deny the other AI agent CLIs as whole commands", () => {
+  // Devin imports the user's global Claude Code CLAUDE.md into every session
+  // as an always-on rule, and a CLAUDE.md that documents delegation reads to
+  // the model as instructions for THIS session: a real swe-1-7 run, asked for
+  // a review, tried to invoke `/agy:review --dry-run --base HEAD~1` — flags
+  // lifted verbatim from the user's config. Inside the sandbox, where shell
+  // commands are auto-approved and `agy` is genuinely on PATH, that call can
+  // SUCCEED, and the "independent" review comes back laundered through a
+  // vendor the user did not pick. The denial makes disobedience loud
+  // (blocked_tool, named in the retry note) instead of silent.
+  for (const [label, perms] of [
+    ["reviewer", readOnlyPermissions()],
+    ["rescue", rescuePermissions({ allowCommands: true })],
+  ]) {
+    for (const cli of ["agy", "codex", "claude", "gemini", "devin"]) {
+      assert.ok(perms.deny.includes(`Exec(${cli})`), `${label} must deny ${cli} as a whole command`);
+    }
+  }
+});
+
 test("no rescue mode ever grants a subagent or a permission escalation", () => {
   for (const allowCommands of [true, false]) {
     const deny = rescuePermissions({ allowCommands }).deny;

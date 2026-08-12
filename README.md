@@ -424,13 +424,26 @@ presenting it as an ordinary per-session option, noting only that it is
 this plugin does.
 
 **Your `~/.claude/CLAUDE.md` is loaded into every Devin session** as a
-user-level always-on rule — `devin rules list` reports it as `CLAUDE [Claude]`.
-Reviewers therefore read your personal Claude instructions along with the review
-request. It is mostly harmless and nearly free (it caches), but it is worth
-knowing if a reviewer ever says something that makes sense only in the context
-of your own agent guidance. No config key was found that disables it:
-`claude`, `rules.claude`, `imports.claude` and `agent.rules.claude` were all
-tried and none suppressed the import.
+user-level always-on rule — `devin rules list` reports it as `CLAUDE [Claude]`
+— and `~/.claude/skills` plus `~/.agents/skills` are mounted as model-invocable
+skills. This is **not** harmless. If your CLAUDE.md documents how to obtain
+second opinions — an `/agy:review` or `/codex:adversarial-review` playbook —
+the reviewer reads that as instructions for itself: a real swe-1-7 run, asked
+for an adversarial review, tried to invoke `/agy:review --dry-run --base
+HEAD~1`, flags lifted verbatim from the user's global config, and lost both
+attempts to the blocked call. Inside the sandbox the real binary is on PATH
+and shell commands are auto-approved, so the call can even *succeed* — and the
+"independent" review comes back quietly laundered through the very vendor you
+did not pick. No config key disables the import (`claude`, `rules.claude`,
+`imports.claude` and `agent.rules.claude` were all tried), so this plugin
+counters it in the two places it can: the request tells the reviewer that
+imported rules belong to a different agent and must be ignored, and the
+permission config denies `agy`, `codex`, `claude`, `gemini` and `devin` as
+whole commands, so a reviewer that tries to outsource its opinion fails
+loudly (`blocked_tool`, named in the retry note) rather than delegating
+silently. If your own CLAUDE.md carries a delegation playbook, consider also
+moving it behind an `@import` — Claude Code resolves imports; Devin ingests
+only the raw file text.
 
 **`rg` and `grep` are rejected as shell commands under per-command screening.**
 Devin wants its own grep tool used instead. This is only a trap because a

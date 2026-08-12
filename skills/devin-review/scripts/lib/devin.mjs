@@ -336,6 +336,32 @@ const REVIEWER_DENY = [
   "mcp_call_tool",
 ];
 
+/**
+ * Other AI agent CLIs, denied as whole commands for reviewers AND rescues.
+ *
+ * Devin imports the user's `~/.claude/CLAUDE.md` into every session as an
+ * always-on rule (see the README's known-quirks section), and a CLAUDE.md
+ * that documents delegation — "get adversarial reviews via /agy:review" —
+ * reads to the model as instructions for THIS session. Observed live:
+ * swe-1-7, asked for a review, tried to invoke `/agy:review --dry-run
+ * --base HEAD~1`, flags lifted verbatim from the user's global config.
+ * Under per-command screening that merely killed the turn; inside the
+ * sandbox the real `agy` binary is on PATH and shell commands are
+ * auto-approved, so the call can SUCCEED — and the "independent" review
+ * comes back laundered through a vendor the user did not pick, spending
+ * that tool's quota on the way.
+ *
+ * The prompt tells the model not to (FOREIGN_RULES in prompts.mjs); this
+ * list makes disobedience loud instead of silent. A denied call ends the
+ * turn and the automatic retry leads with a note naming it — strictly
+ * better than a review that quietly came from the wrong model. Same
+ * command-shaped denial as `Exec(git)` below: the whole command, because a
+ * subcommand list is trivially routed around.
+ */
+const AGENT_CLI_DENY = ["agy", "codex", "claude", "gemini", "devin"].map(
+  (cli) => `Exec(${cli})`,
+);
+
 const READ_TOOLS = ["read", "grep", "find_file_by_name", "notebook_read"];
 
 /**
@@ -370,7 +396,7 @@ const READ_TOOLS = ["read", "grep", "find_file_by_name", "notebook_read"];
  */
 export function readOnlyPermissions() {
   return {
-    deny: [...REVIEWER_DENY],
+    deny: [...REVIEWER_DENY, ...AGENT_CLI_DENY],
     allow: [...READ_TOOLS, "Read(**)"],
   };
 }
@@ -397,7 +423,7 @@ export function rescuePermissions({ allowCommands }) {
   // mode into a sandbox, and the documentation says so rather than implying a
   // containment that a command blacklist cannot provide.
   const deny = ["Exec(git)", "Exec(rm)", "Exec(sudo)", "Write(.git/**)",
-    "run_subagent", "request_scope"];
+    "run_subagent", "request_scope", ...AGENT_CLI_DENY];
   if (!allowCommands) deny.push("exec", "write_to_process", "kill_shell");
 
   return { deny, allow: [...READ_TOOLS, "edit", "write", "Read(**)", "Write(**)"] };
