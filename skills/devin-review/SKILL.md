@@ -138,8 +138,20 @@ both reviews can never blur which lens reached which conclusion.
 
 ## Using the panel
 
-`panel` runs each model over the identical request, blind to the others, and
-prints a comparison table, a **corroboration map**, and then every review in full.
+`panel` runs each model over the identical request, blind to the others. Each
+review is printed the moment its model finishes, in completion order; the
+comparison table and **corroboration map** follow at the end, under **Panel
+summary**, because they cross-reference every reviewer and so can only exist
+once the slowest one is done.
+
+That streaming is the reason to launch a panel as a background task and read
+its output while it runs: the fastest model routinely answers in a minute or
+two while the slowest takes ten or more, and a finished review is in the
+output the moment it exists. Start verifying the early findings against the
+code while the rest run — by the time the summary lands, half the
+reconciliation is already done. Failures are announced on stderr as they
+happen, and a model that hangs until the timeout delays only the summary, not
+the reviews you already have.
 
 The corroboration map is the part to read first, and it is computed
 arithmetically — same file, overlapping line ranges — never by asking a model.
@@ -151,8 +163,8 @@ correlated at all — "same file" is not evidence of "same bug" — so they alwa
 appear as single-source.
 
 A model whose output did not parse takes no part in the map, and the map says so.
-Its review is still printed in full further down: read it, because it may hold
-findings the map does not list.
+Its review was still printed in full when it finished: read it, because it may
+hold findings the map does not list.
 
 **It does not synthesize, and that is deliberate.** A fourth model asked to merge
 three reviews has no repository access, cannot check any claim, and reliably
@@ -319,10 +331,12 @@ from someone else, it is the whole reason the check exists.
   backstop, not a deadline:** a wall-clock kill discards the entire review
   (Devin prints only at the end), so it sits well clear of any thorough run and
   only catches a genuinely hung one. Raise it for a large diff, or `--timeout
-  none` to remove it. A panel takes about as long as its slowest member, and one
-  hung model blocks the others until the backstop fires — so launch a review as
-  a background task so it does not block. An interactive hang is also handled by
-  Ctrl+C, which cleans up the temp dir.
+  none` to remove it. A panel's *summary* still takes as long as its slowest
+  member, but every finished review streams to stdout the moment its model
+  completes — so one hung model delays only the cross-model summary, never the
+  reviews that already exist. Launch a review as a background task and read the
+  output as it grows. An interactive hang is also handled by Ctrl+C, which
+  cleans up the temp dir.
 - The reviewer's read-only property is layered: the OS sandbox contains shell
   writes where the platform has one (verified live: redirects, `python -c`,
   `node -e` and `sed -i` writes all fail with `Operation not permitted` while

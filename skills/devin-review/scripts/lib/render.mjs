@@ -96,14 +96,103 @@ export function summariseSeverities(findings) {
 }
 
 /**
- * The panel report.
+ * The panel report, in three streamable pieces.
  *
- * Ordered for adjudication rather than for reading: the corroboration map comes
- * first, because "two labs independently flagged this line" and "only one model
- * saw this" are the two facts that decide what to check and in what order.
- * Everything else is evidence behind those.
+ * The panel used to render as one document once every model had finished, which
+ * made the whole panel exactly as slow as its slowest member: a review that
+ * completed at minute two sat invisible in memory until minute twenty-five.
+ * Devin itself prints only at end-of-turn, so a per-model review is the
+ * smallest unit that can exist early — and the moment it exists, it streams.
+ *
+ * The pieces compose in the order the CLI emits them: header (printed before
+ * the first review lands), one section per reviewer as each finishes, then the
+ * summary — comparison table and corroboration map — which cross-references
+ * every reviewer and so can only exist after the last one. renderPanel() glues
+ * the same pieces in the same shape, with one honest caveat: it renders
+ * sections in the order of the `results` array (model roster order), while a
+ * streamed run prints them in completion order. Same pieces, same document
+ * structure; section order is the one thing only the run itself decides.
+ *
+ * The summary lands last but is still the part to read first: "two labs
+ * independently flagged this line" and "only one model saw this" are the two
+ * facts that decide what to check and in what order. The header says so, for
+ * the reader who has only the file.
  */
-export function renderPanel({ results, lens, scope, warnings }) {
+export function renderPanelHeader({ count, lens, scope }) {
+  return [
+    `# Panel review — ${count} model(s), ${lens} lens`,
+    "",
+    `Scope: ${scope}`,
+    "",
+    "_Each review below was printed the moment its model finished, in completion " +
+      "order — every review is complete and verifiable the moment it appears, so " +
+      "start on them right away. Once the run ends, begin the adjudication from the " +
+      "**Panel summary** at the end: its comparison table and corroboration map " +
+      "cross-reference all the reviewers._",
+    "",
+  ].join("\n");
+}
+
+/**
+ * One reviewer's full output, streamable as soon as that model completes.
+ *
+ * Failed results render as nothing here: a failure has no review to print, and
+ * its story — which model, why, and that its silence is not agreement — belongs
+ * in the summary, where it is told next to the models that did answer.
+ */
+export function renderPanelSection(result) {
+  if (!result.ok) return "";
+  const out = ["---", ""];
+
+  if (!result.report) {
+    // ok-but-unparseable is still a review. Discarding one because a model got
+    // its punctuation wrong would lose exactly the finding that was paid for.
+    out.push(renderUnstructured({
+      text: result.review,
+      model: result.model,
+      reason: result.reason || "output did not parse as a structured report",
+      durationSeconds: result.durationSeconds,
+    }));
+    return out.join("\n");
+  }
+
+  out.push(`## Reviewer: \`${result.model}\`  _(${result.durationSeconds}s)_`);
+  out.push("");
+  if (result.report.verdict) out.push(`**Verdict: ${result.report.verdict}**`);
+  if (result.report.summary) out.push("", result.report.summary);
+  out.push("");
+  if (result.report.findings.length === 0) {
+    out.push("No findings reported.");
+    out.push("");
+    return out.join("\n");
+  }
+  for (const finding of result.report.findings) {
+    out.push(...findingLines(finding, `[\`${result.model}#${finding.id}\`]`));
+    out.push("");
+  }
+  if (result.report.next_steps.length > 0) {
+    out.push("**Next steps:** " + result.report.next_steps.join("; "));
+    out.push("");
+  }
+  // Disclosed per reviewer, exactly as a single report does. A panel hiding
+  // what it could not read would be the same omission in a busier page.
+  if (result.report.droppedFindings > 0) {
+    out.push(
+      `_${result.report.droppedFindings} finding(s) from this model were dropped as ` +
+        "unreadable. Re-run with --json to inspect the raw output._",
+      "",
+    );
+  }
+  return out.join("\n");
+}
+
+/**
+ * The cross-model synthesis: comparison table, corroboration map, and the
+ * roll-call of models that produced nothing. Every line here compares
+ * reviewers to each other, which is why this piece — and only this piece —
+ * must wait for the slowest model.
+ */
+export function renderPanelSummary({ results, warnings }) {
   // Three buckets, and every result lands in exactly one of them. An earlier
   // version had only `usable` (ok with a report) and `failed` (not ok), which
   // left ok-but-unstructured results in neither — so a model that answered in
@@ -115,17 +204,16 @@ export function renderPanel({ results, lens, scope, warnings }) {
   const failed = results.filter((r) => !r.ok);
   const out = [];
 
-  out.push(`# Panel review — ${results.length} model(s), ${lens} lens`);
+  out.push("---");
   out.push("");
-  out.push(`Scope: ${scope}`);
+  out.push("## Panel summary");
   out.push("");
 
-  // Stated up front, not only in the failure section further down.
-  //
-  // A panel that loses a reviewer still prints a confident-looking report, and
-  // the reader's natural inference — "the other two found nothing there, so it
-  // is fine" — is exactly wrong: nobody looked. Putting the count above the
-  // findings makes the panel's actual width impossible to miss.
+  // Stated at the top of the summary, not only in the failure section further
+  // down. A panel that loses a reviewer still prints a confident-looking
+  // table, and the reader's natural inference — "the other two found nothing
+  // there, so it is fine" — is exactly wrong: nobody looked. (While streaming,
+  // the same warning already went to stderr the moment the model failed.)
   if (failed.length > 0) {
     out.push(
       `> ⚠ **${failed.length} of ${results.length} model(s) returned nothing** ` +
@@ -141,8 +229,8 @@ export function renderPanel({ results, lens, scope, warnings }) {
   for (const result of results) {
     if (result.ok && !result.report) {
       // Not "— (ok)", which reads as "ran fine, found nothing". There IS a
-      // review below; it just could not be parsed into findings.
-      out.push(`| \`${result.model}\` | unstructured | see below | ${result.durationSeconds}s |`);
+      // review above; it just could not be parsed into findings.
+      out.push(`| \`${result.model}\` | unstructured | see above | ${result.durationSeconds}s |`);
       continue;
     }
     if (!result.ok) {
@@ -177,12 +265,12 @@ export function renderPanel({ results, lens, scope, warnings }) {
   const solo = clusters.filter((c) => c.agreement === 1);
 
   if (clusters.length > 0) {
-    out.push("## Where to look first");
+    out.push("### Where to look first");
     out.push("");
     if (unstructured.length > 0) {
       out.push(
         `_Note: ${unstructured.length} model(s) returned unparseable output and take no part ` +
-          "in this map. Their reviews are printed in full below and may contain findings not " +
+          "in this map. Their reviews are printed in full above and may contain findings not " +
           "listed here._",
       );
       out.push("");
@@ -220,7 +308,7 @@ export function renderPanel({ results, lens, scope, warnings }) {
   }
 
   if (failed.length > 0) {
-    out.push(`## Models that produced nothing (${failed.length})`);
+    out.push(`### Models that produced nothing (${failed.length})`);
     out.push("");
     for (const result of failed) {
       out.push(`- \`${result.model}\` — **${result.className}**: ${result.reason}`);
@@ -233,50 +321,21 @@ export function renderPanel({ results, lens, scope, warnings }) {
     out.push("");
   }
 
-  for (const result of unstructured) {
-    out.push("---");
-    out.push("");
-    out.push(renderUnstructured({
-      text: result.review,
-      model: result.model,
-      reason: result.reason || "output did not parse as a structured report",
-      durationSeconds: result.durationSeconds,
-    }));
-  }
-
-  for (const result of usable) {
-    out.push("---");
-    out.push("");
-    out.push(`## Reviewer: \`${result.model}\`  _(${result.durationSeconds}s)_`);
-    out.push("");
-    if (result.report.verdict) out.push(`**Verdict: ${result.report.verdict}**`);
-    if (result.report.summary) out.push("", result.report.summary);
-    out.push("");
-    if (result.report.findings.length === 0) {
-      out.push("No findings reported.");
-      out.push("");
-      continue;
-    }
-    for (const finding of result.report.findings) {
-      out.push(...findingLines(finding, `[\`${result.model}#${finding.id}\`]`));
-      out.push("");
-    }
-    if (result.report.next_steps.length > 0) {
-      out.push("**Next steps:** " + result.report.next_steps.join("; "));
-      out.push("");
-    }
-    // Disclosed per reviewer, exactly as a single report does. A panel hiding
-    // what it could not read would be the same omission in a busier page.
-    if (result.report.droppedFindings > 0) {
-      out.push(
-        `_${result.report.droppedFindings} finding(s) from this model were dropped as ` +
-          "unreadable. Re-run with --json to inspect the raw output._",
-        "",
-      );
-    }
-  }
-
   return out.join("\n");
+}
+
+/**
+ * The whole panel document at once, for callers that already have every
+ * result. Composes the streamable pieces in the order the CLI streams them,
+ * so the two paths cannot drift apart.
+ */
+export function renderPanel({ results, lens, scope, warnings }) {
+  const sections = results.filter((r) => r.ok).map((result) => renderPanelSection(result));
+  return [
+    renderPanelHeader({ count: results.length, lens, scope }),
+    ...sections,
+    renderPanelSummary({ results, warnings }),
+  ].join("\n");
 }
 
 /**

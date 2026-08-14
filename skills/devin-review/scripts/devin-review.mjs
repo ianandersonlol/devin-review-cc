@@ -53,7 +53,13 @@ import {
   runAndInterpret,
   runPanel,
 } from "./lib/panel.mjs";
-import { renderPanel, renderReport, renderUnstructured } from "./lib/render.mjs";
+import {
+  renderPanelHeader,
+  renderPanelSection,
+  renderPanelSummary,
+  renderReport,
+  renderUnstructured,
+} from "./lib/render.mjs";
 import { scanForSecrets } from "./lib/secrets.mjs";
 import { createTempDir, preserveTempDir, removeTempDir, sweepStaleTempDirs } from "./lib/tempdir.mjs";
 
@@ -423,6 +429,24 @@ async function commandReview(options) {
     if (!options.quiet) {
       log(`running ${options.models.length} reviewers in parallel...`);
     }
+    // Each finished review streams to stdout immediately rather than waiting
+    // for the whole panel: the fastest model's findings are readable minutes —
+    // sometimes twenty — before the slowest model lets the summary exist. The
+    // header goes out lazily, just before the first review, so an all-failed
+    // panel leaves stdout empty exactly as it did before streaming.
+    let streamedHeader = false;
+    const streamSection = (result) => {
+      if (options.json || !result.ok) return;
+      if (!streamedHeader) {
+        streamedHeader = true;
+        process.stdout.write(`${renderPanelHeader({
+          count: options.models.length,
+          lens: options.lens,
+          scope: diff.description,
+        })}\n`);
+      }
+      process.stdout.write(`${renderPanelSection(result)}\n`);
+    };
     const results = await runPanel({
       devinPath,
       repoRoot: root,
@@ -439,13 +463,15 @@ async function commandReview(options) {
         if (!options.quiet) log(`  ${model} produced nothing [${first.className}] — retrying once with a corrective note...`);
       },
       onFinish: (result) => {
-        if (options.quiet) return;
-        log(
-          result.ok
-            ? `  ${result.model} finished in ${result.durationSeconds}s ` +
-              `(${result.report ? `${result.report.findings.length} findings` : "unstructured"})`
-            : `  ${result.model} produced nothing [${result.className}]`,
-        );
+        if (!options.quiet) {
+          log(
+            result.ok
+              ? `  ${result.model} finished in ${result.durationSeconds}s ` +
+                `(${result.report ? `${result.report.findings.length} findings` : "unstructured"})`
+              : `  ${result.model} produced nothing [${result.className}]`,
+          );
+        }
+        streamSection(result);
       },
     });
 
@@ -475,9 +501,9 @@ async function commandReview(options) {
       return 0;
     }
 
-    process.stdout.write(
-      `${renderPanel({ results, lens: options.lens, scope: diff.description, warnings })}\n`,
-    );
+    // The reviews are already on stdout, streamed as each model finished; what
+    // remains is the one piece that had to wait for all of them.
+    process.stdout.write(`${renderPanelSummary({ results, warnings })}\n`);
     return 0;
   } finally {
     // A failed run's work dir holds the only evidence of what went wrong — the

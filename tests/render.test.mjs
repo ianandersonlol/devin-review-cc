@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { normalizeReport } from "../skills/devin-review/scripts/lib/findings.mjs";
-import { renderPanel, renderReport, renderUnstructured } from "../skills/devin-review/scripts/lib/render.mjs";
+import {
+  renderPanel,
+  renderPanelHeader,
+  renderPanelSection,
+  renderPanelSummary,
+  renderReport,
+  renderUnstructured,
+} from "../skills/devin-review/scripts/lib/render.mjs";
 
 const report = (findings, over = {}) => normalizeReport({
   verdict: "REVISE", summary: "Two problems.", findings, next_steps: ["Fix the retry."], ...over,
@@ -79,12 +86,41 @@ test("the model is named even on a single review", () => {
 
 // ── panel ────────────────────────────────────────────────────────────────────
 
-test("the panel leads with a per-model comparison table", () => {
+test("the panel summary carries the per-model comparison table", () => {
   const text = renderPanel({
     results: [result("a", [FINDING]), result("b", [FINDING])],
     lens: "defect", scope: "branch", warnings: [],
   });
   assert.match(text, /\| `a` \| REVISE \| 1 HIGH \| 10s \|/);
+});
+
+test("the panel document is the streamed pieces, composed", () => {
+  // The CLI emits header, then one section per finished reviewer, then the
+  // summary. renderPanel composes the identical pieces in results-array order;
+  // a streamed run may order the sections differently (completion order), but
+  // the pieces themselves must be the same or the two paths silently diverge.
+  const results = [result("a", [FINDING]), result("b", [FINDING])];
+  const text = renderPanel({ results, lens: "defect", scope: "branch", warnings: [] });
+  const composed = [
+    renderPanelHeader({ count: 2, lens: "defect", scope: "branch" }),
+    renderPanelSection(results[0]),
+    renderPanelSection(results[1]),
+    renderPanelSummary({ results, warnings: [] }),
+  ].join("\n");
+  assert.equal(text, composed);
+
+  // Reviews stream first; the cross-model synthesis can only exist at the end.
+  assert.ok(
+    text.indexOf("## Reviewer: `a`") < text.indexOf("## Panel summary"),
+    "reviewer sections must precede the summary",
+  );
+});
+
+test("a failed result streams no section — its story belongs in the summary", () => {
+  const section = renderPanelSection({
+    model: "b", ok: false, durationSeconds: 2, className: "quota", reason: "out of budget",
+  });
+  assert.equal(section, "");
 });
 
 test("corroborated sites are called out with the models that found them", () => {
@@ -151,11 +187,11 @@ test("models that produced nothing are reported as missing data", () => {
   assert.match(text, /not as agreement/i);
 });
 
-test("a narrowed panel says so ABOVE the findings, not only at the bottom", () => {
-  // Position is the whole point, so position is what is asserted. The failure
-  // detail has always been printed further down; what it could not do is stop a
-  // reader taking "the other models flagged nothing here" as agreement, because
-  // by the time they reached it they had already read the findings.
+test("a narrowed panel says so at the TOP of the summary, not only at the bottom", () => {
+  // Position is the whole point, so position is what is asserted. The summary
+  // is read first (the header says to), and its opening line must stop a
+  // reader taking "the other models flagged nothing here" as agreement before
+  // they reach the table or the map. The failure detail stays further down.
   const text = renderPanel({
     results: [
       result("a", [FINDING]),
@@ -168,7 +204,7 @@ test("a narrowed panel says so ABOVE the findings, not only at the bottom", () =
   const notice = text.indexOf("2 of 3 model(s) returned nothing");
   assert.ok(notice > -1, `expected a count of silent models, got:\n${text.slice(0, 400)}`);
   assert.ok(notice < text.indexOf("| Model | Verdict |"), "the notice must precede the results table");
-  assert.ok(notice < text.indexOf("## Where to look first"), "the notice must precede the findings");
+  assert.ok(notice < text.indexOf("### Where to look first"), "the notice must precede the map");
 
   // Naming the models and why each one died, in the notice itself: "2 of 3
   // returned nothing" without saying which is not actionable.
@@ -224,7 +260,7 @@ test("an unstructured row is labelled as such, not as a clean 'ok'", () => {
       review: "some prose" }],
     lens: "defect", scope: "s", warnings: [],
   });
-  assert.match(text, /\| `prose` \| unstructured \| see below \|/);
+  assert.match(text, /\| `prose` \| unstructured \| see above \|/);
   assert.ok(!/— \(ok\)/.test(text), "'ok' with no findings reads as a clean review");
 });
 

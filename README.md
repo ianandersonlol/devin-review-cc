@@ -54,9 +54,10 @@ the identical diff, in parallel, each blind to the others.
 | kimi-k3-high   | — (quota) | —                   | 2s   |
 ```
 
-…followed by each review in full.
-
-…and, above the reviews, a **corroboration map**:
+Each review streams to stdout the moment its model finishes — the fastest
+model's findings are readable while the slowest is still working — and the
+**Panel summary** (that table, plus a **corroboration map**) is printed at the
+end, once every reviewer is accounted for:
 
 ```
 **Corroborated — 2 site(s) flagged by more than one model.**

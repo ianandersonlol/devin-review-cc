@@ -37,10 +37,16 @@ once (default 3).
    holding the request and every attempt's session transcript, so a silent or
    timed-out model's behaviour can actually be inspected.
 
-3. Present the output. The report leads with a comparison table, then a
-   **corroboration map** splitting findings into corroborated and single-source,
-   then each review in full. Keep that structure — do not collapse three reviews
-   into one summary.
+3. Present the output. Each review streams the moment its model finishes, in
+   completion order; the **Panel summary** at the end holds the comparison
+   table and the **corroboration map** splitting findings into corroborated and
+   single-source. Read the summary first anyway, then the reviews — and keep
+   that structure when presenting: do not collapse three reviews into one
+   summary.
+
+   Because reviews stream, run the panel as a background task and poll its
+   output: the fastest model answers minutes before the slowest, and you can
+   verify its findings against the code while the rest are still running.
 
    Findings are addressable as `model#id` (e.g. `swe-1-7#2`). Use those addresses
    when you discuss them rather than re-quoting the text, and pass `--json` if
