@@ -52,7 +52,10 @@ export function parseArgs(argv) {
     models: [],
     modelExplicit: false,
     modelsExplicit: false,
-    concurrency: 3,
+    // Sized to the default panel, so a bare `panel` runs in one wave rather than
+    // holding its fourth reviewer back behind the slowest of the first three —
+    // which would roughly double the wall clock of the most common invocation.
+    concurrency: PANEL_DEFAULT.length,
     // A generous default backstop, not a tight deadline: high enough to clear
     // any real review, low enough to bound a hung run. `--timeout none` opts
     // out (timeoutMs null → the spawn helper sets no timer). See TIMEOUT_DEFAULT.
@@ -231,8 +234,8 @@ export function parseArgs(argv) {
   }
 
   // Resolution order, most specific first. --model must beat the `panel`
-  // default, or `panel --model kimi-k3-high` would quietly review with three
-  // models the user did not name.
+  // default, or `panel --model kimi-k3-high` would quietly review with the whole
+  // council the user did not name.
   if (options.models.length === 0) {
     if (options.modelExplicit) options.models = [options.model];
     else if (subcommand === "panel") options.models = [...PANEL_DEFAULT];
@@ -289,7 +292,7 @@ Options:
   --model ID          single reviewer (default: ${MODEL_DEFAULT}; see \`devin-review models\`)
   --models a,b,c      run these models in parallel and report each separately
   --panel             shorthand for --models ${PANEL_DEFAULT.join(",")}
-  --concurrency N     how many panel models run at once (default: 3)
+  --concurrency N     how many panel models run at once (default: ${PANEL_DEFAULT.length})
   --focus TEXT        extra instruction, e.g. --focus "auth and data loss"
   --timeout DUR       per-model wall clock, e.g. 30s, 10m, 1h; 'none' to disable
                       (default: ${TIMEOUT_DEFAULT}). A generous backstop for a HUNG run, not

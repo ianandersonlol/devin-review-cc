@@ -29,8 +29,9 @@ node "${CLAUDE_PLUGIN_ROOT}/skills/devin-review/scripts/devin-review.mjs" models
    - For a panel, pick different *vendors*, not different checkpoints of one
      model. Two Opus tiers reviewing the same diff is one opinion billed twice.
    - Free models (`swe-1-7`, `glm-5-2`) are genuinely good reviewers and make
-     panels that cost nothing. Escalate to paid models for risky diffs, not
-     reflexively.
+     panels that cost nothing. The default council spends a few tens of cents to
+     buy two more vendors; recommend the free pair when the diff does not
+     warrant that, rather than escalating reflexively in either direction.
 
 ## Notes
 

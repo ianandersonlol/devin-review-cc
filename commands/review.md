@@ -69,13 +69,16 @@ node "${CLAUDE_PLUGIN_ROOT}/skills/devin-review/scripts/devin-review.mjs" review
 
 - Default scope is the working tree vs the merge-base with `origin/HEAD`/`main`/
   `master`, so committed-on-branch **and** uncommitted work are reviewed together.
-- The default model is `swe-1-7`: free, fast, and from Cognition rather than
-  Anthropic. Escalate with `--model` when the change is genuinely risky —
-  `/devin:models` lists what the account can use, with prices.
+- The default model is `deepseek-v4-flash-high`: 1M of context at $0.14/$0.28 per
+  MTok, so cents per review, and from DeepSeek rather than Anthropic. Escalate
+  with `--model` when the change is genuinely risky, or drop to a free reviewer
+  (`swe-1-7`, `glm-5-2`) when it is not — `/devin:models` lists what the account
+  can use, with prices.
 - **Do not pick a `claude-*` model.** It correlates with you, so it is not an
   independent voice; the script warns when you do. Prefer a different lab.
-- **This command is one voice.** For several, use `/devin:panel`, which is the
-  feature this plugin exists for. For a cross-tool council, run this alongside
-  the agy (Gemini) and Codex (GPT) plugins and reconcile the results yourself.
+- **This command is one voice.** For several, use `/devin:panel`, whose default
+  council is four vendors at once — the feature this plugin exists for. For a
+  cross-tool council, run this alongside the agy (Gemini) and Codex (GPT)
+  plugins and reconcile the results yourself.
 - Paid models consume Devin usage quota; free models do not. `--dry-run` shows
   exactly what would be sent and spends nothing.

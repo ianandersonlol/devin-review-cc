@@ -21,7 +21,7 @@ Works in both Claude Code and Codex.
 /devin:review --allow-hooks              # proceed in a repo that declares hooks
 /devin:review --allow-repo-mcp           # proceed in a repo that configures MCP servers
 
-/devin:panel                             # THE FEATURE: 3 vendors, in parallel
+/devin:panel                             # THE FEATURE: 4 vendors, in parallel
 /devin:panel --models swe-1-7,gpt-5-6-sol-high,kimi-k3-high
 /devin:panel --concurrency 2             # bound how many run at once
 
@@ -43,9 +43,11 @@ node /path/to/devin-review-cc/skills/devin-review/scripts/devin-review.mjs panel
 ## Why a panel
 
 Every other review plugin gives you one model's opinion. The Devin CLI reaches
-Cognition's SWE models, OpenAI's GPT-5.6, Moonshot's Kimi K3, Zhipu's GLM, and
-Anthropic's Claude through a single binary — so `panel` runs several of them over
-the identical diff, in parallel, each blind to the others.
+Moonshot's Kimi K3, xAI's Grok, DeepSeek, Zhipu's GLM, Cognition's SWE models,
+OpenAI's GPT-5.6 and Anthropic's Claude through a single binary — so `panel` runs
+several of them over the identical diff, in parallel, each blind to the others.
+
+From a real run of `--models swe-1-7,glm-5-2,kimi-k3-high`:
 
 ```
 | Model          | Verdict | Findings              | Time |
@@ -86,11 +88,13 @@ tiers reviewing the same diff is one opinion billed twice. The tool warns about
 single-family panels, and about `claude-*` models, which correlate with the
 assistant orchestrating the review and therefore share its blind spots.
 
-The default panel is `swe-1-7,glm-5-2,kimi-k3-high` — three vendors, two of them
-free. That is a robustness choice as much as a cost one: paid capacity is what
-runs out mid-week, and a default panel that returns nothing the moment a quota
-trips is a default panel nobody trusts. A partially failed panel still prints
-what it got and names what it lost.
+The default council is `kimi-k3-high,grok-4-6-high,deepseek-v4-flash-high,glm-5-2`
+— four vendors: Moonshot, xAI, DeepSeek, Zhipu. Spreading across four accounts is
+a robustness choice as much as a decorrelation one: paid capacity is what runs
+out mid-week, and one provider having a bad hour costs you a quarter of the
+council rather than the council. A partially failed panel still prints what it
+got and names what it lost. `glm-5-2` is free; the other three run a few tens of
+cents on a normal diff, and `--dry-run` prices it before you spend anything.
 
 ## The findings contract
 
@@ -346,8 +350,8 @@ a later start once they are a day old — measured by the newest mtime of the di
 *and its contents*, so a long-running review that keeps re-exporting is never
 mistaken for a leak.
 
-A panel that loses a reviewer still exits 0 — two of three reviews are worth
-having — but says so **above the findings**, not only at the bottom:
+A panel that loses a reviewer still exits 0 — most of a council is worth having
+— but says so **above the findings**, not only at the bottom:
 
 ```
 > ⚠ 1 of 3 model(s) returned nothing (`swe-1-7` — blocked_tool).
@@ -428,6 +432,11 @@ Paid models consume Devin usage quota; `swe-1-7` and `glm-5-2` are free. A panel
 multiplies cost by the number of paid members, so the tool prints a rough
 estimate before it runs and `--dry-run` prints it and stops. `models` shows live
 per-MTok pricing read from your account rather than a hardcoded table.
+
+Three of the four default council members are paid, so a bare `/devin:panel` is
+not free. The cheap end of the roster still is: `--models glm-5-2,swe-1-7` costs
+nothing at all, and the single-reviewer default (`deepseek-v4-flash-high`, at
+$0.14/$0.28 per MTok) is cents per review.
 
 ## Known quirks that are not this plugin's doing
 

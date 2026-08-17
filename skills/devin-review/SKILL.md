@@ -20,9 +20,9 @@ rejection. The sandbox does **not** block network egress; the prompt forbids
 network use, but that is policy, not enforcement.
 
 What distinguishes this from the other review plugins is that **one binary
-fronts many vendors' models** — Cognition, OpenAI, Moonshot, Zhipu, Google,
-Anthropic. So a multi-vendor panel is a single command, and `panel` is the
-subcommand this plugin exists for.
+fronts many vendors' models** — Moonshot, xAI, DeepSeek, Zhipu, Cognition,
+OpenAI, Google, Anthropic. So a multi-vendor panel is a single command, and
+`panel` is the subcommand this plugin exists for.
 
 ## Running it
 
@@ -62,10 +62,10 @@ this".
 --staged          staged changes only
 --uncommitted     uncommitted only (vs HEAD)
 --lens defect|design  override the lens the subcommand picked
---model ID        single reviewer (default: swe-1-7)
+--model ID        single reviewer (default: deepseek-v4-flash-high)
 --models a,b,c    run these in parallel and report each separately
---panel           shorthand for the default three-vendor panel
---concurrency N   how many panel models run at once (default 3)
+--panel           shorthand for the default four-vendor council
+--concurrency N   how many panel models run at once (default 4)
 --focus "TEXT"    steer the reviewer, e.g. --focus "auth and data loss"
 --timeout DUR     per-model wall clock, or 'none' (default: 45m). A generous
                   backstop for a HUNG run, not a deadline: a kill discards the
@@ -167,9 +167,9 @@ A model whose output did not parse takes no part in the map, and the map says so
 Its review was still printed in full when it finished: read it, because it may
 hold findings the map does not list.
 
-**It does not synthesize, and that is deliberate.** A fourth model asked to merge
-three reviews has no repository access, cannot check any claim, and reliably
-prefers whatever was stated most confidently — it would launder three
+**It does not synthesize, and that is deliberate.** A further model asked to
+merge the reviews has no repository access, cannot check any claim, and reliably
+prefers whatever was stated most confidently — it would launder four
 independent signals into one derivative opinion and bury the disagreements,
 which are the most informative thing a panel produces. Reconciliation is your
 job, because you are the one who can read the code:
@@ -190,9 +190,16 @@ nothing. Treat their silence as missing data, never as agreement.
 
 ## Model choice
 
-Default is `swe-1-7` — free, fast, and from Cognition rather than Anthropic.
-Default panel is `swe-1-7,glm-5-2,kimi-k3-high`: three vendors, two free, so a
-quota exhaustion mid-week does not leave you with no review at all.
+Default is `deepseek-v4-flash-high` — 1M of context at $0.14/$0.28 per MTok, so
+cents per review, and from DeepSeek rather than Anthropic. Drop to `swe-1-7` or
+`glm-5-2` (both free) when the diff does not warrant even that.
+
+Default council is `kimi-k3-high,grok-4-6-high,deepseek-v4-flash-high,glm-5-2`:
+four vendors — Moonshot, xAI, DeepSeek, Zhipu — so one provider's quota
+exhaustion mid-week costs a quarter of the council rather than the whole review.
+Three of the four are paid, so a bare `panel` is a few tens of cents on a normal
+diff rather than free; say so if the user is cost-sensitive, and offer
+`--models swe-1-7,glm-5-2` as the zero-cost pair.
 
 **Never pick a `claude-*` model.** The entire value here is an *independent*
 voice; a model from the same family as the agent driving the review shares its
@@ -337,8 +344,9 @@ blocker and ask rather than adding the flag yourself.
 ## Notes
 
 - Paid models consume Devin usage quota; free models do not. A panel multiplies
-  cost by the number of paid models in it — the script prints a rough estimate
-  before running, and `--dry-run` prints it and stops.
+  cost by the number of paid models in it, and three of the four default council
+  members are paid — the script prints a rough estimate before running, and
+  `--dry-run` prints it and stops.
 - Reviews are synchronous and run at their own pace — measured from ~190s to
   past 900s on the same diff, and longer now that a sandboxed reviewer can read
   more and run read-only tests. **The default timeout is a generous 45m

@@ -13,26 +13,35 @@ import { run, which } from "./exec.mjs";
 /**
  * Default single reviewer.
  *
- * SWE-1.7 is Cognition's own model: free on current plans, 262K of context, and
- * fast. A review you can afford to run on every branch beats a better review you
- * ration, which is why the cheap model is the default and escalation is a flag.
+ * DeepSeek V4 Flash: 1M of context at $0.14/$0.28 per MTok, which is cents per
+ * review — cheap enough to run on every branch, and a review you can afford to
+ * run habitually beats a better review you ration. The 1M window matters more
+ * here than the price: a reviewer with repo access reads far more than the diff
+ * it was handed, and a small context turns "verify this against its call sites"
+ * into "guess". Also the member of the council with the least in common with the
+ * assistant orchestrating it (see CORRELATED_PREFIXES).
  */
-export const MODEL_DEFAULT = "swe-1-7";
+export const MODEL_DEFAULT = "deepseek-v4-flash-high";
 
 /**
  * Default panel.
  *
- * Three *vendors*, not three checkpoints: Cognition, Zhipu, Moonshot. The whole
- * value of a panel is decorrelated error — two models from one lab tend to miss
- * the same things, so a panel of siblings costs three times as much to buy back
+ * Four *vendors*, not four checkpoints: Moonshot, xAI, DeepSeek, Zhipu. The
+ * whole value of a panel is decorrelated error — two models from one lab tend to
+ * miss the same things, so a panel of siblings costs N times as much to buy back
  * very little. Deliberately excludes claude-* (see CORRELATED_PREFIXES).
  *
- * Two of the three are free, which is not a cost dodge but a robustness one:
- * paid capacity is the thing that runs out mid-week, and a default panel that
- * returns nothing the moment a quota trips is a default panel nobody trusts.
- * `--models swe-1-7,glm-5-2` is the entirely free pair; --models takes anything.
+ * Vendor spread is also the robustness argument. A default panel that returns
+ * nothing the moment one provider trips a quota or has a bad hour is a default
+ * panel nobody trusts; four independent accounts behind one binary means a
+ * failure takes a quarter of the panel, not the panel. `glm-5-2` is free, so
+ * `--models glm-5-2` is the zero-cost fallback; --models takes anything.
+ *
+ * Cost is deliberately not minimised. This roster runs a few tens of cents on a
+ * normal diff, which is the right trade for a second opinion on a change you are
+ * about to merge — `devin-review panel --dry-run` prices it before you commit.
  */
-export const PANEL_DEFAULT = ["swe-1-7", "glm-5-2", "kimi-k3-high"];
+export const PANEL_DEFAULT = ["kimi-k3-high", "grok-4-6-high", "deepseek-v4-flash-high", "glm-5-2"];
 
 /**
  * Models that share a lineage with the Claude Code session orchestrating this

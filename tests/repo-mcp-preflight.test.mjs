@@ -4,9 +4,20 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { MODEL_DEFAULT, PANEL_DEFAULT } from "../skills/devin-review/scripts/lib/devin.mjs";
 import { run, which } from "../skills/devin-review/scripts/lib/exec.mjs";
 
 const cli = path.resolve("skills/devin-review/scripts/devin-review.mjs");
+
+// The mock roster is derived from the real defaults rather than hardcoded, so
+// changing MODEL_DEFAULT or PANEL_DEFAULT cannot leave this fixture describing
+// an account that cannot run them — which fails as "unknown model", nowhere
+// near the MCP pre-flight these tests are actually about.
+// Real newlines here: this string is embedded into the mock's source with
+// JSON.stringify, which does the escaping.
+const MOCK_ROSTER = [...new Set([MODEL_DEFAULT, ...PANEL_DEFAULT])]
+  .map((id) => `Mock ${id} (mock-${id})\n  ${id}  Mock ${id}  [1M context, Free]`)
+  .join("\n\n");
 
 async function scratchRepo() {
   const git = await which("git");
@@ -37,7 +48,7 @@ async function mockDevinPath() {
   const script = `#!/usr/bin/env node
 const args = process.argv.slice(2);
 if (args[0] === "models" && args[1] === "list") {
-  console.log("SWE-1.7 (swe-1.7)\\n  swe-1-7  SWE-1.7 Max  [262K context, Free]");
+  console.log(${JSON.stringify(MOCK_ROSTER)});
   process.exit(0);
 }
 if (args[0] === "--help") {
