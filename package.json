@@ -1,6 +1,6 @@
 {
   "name": "devin-review",
-  "version": "1.1.0",
+  "version": "1.2.1",
   "private": true,
   "type": "module",
   "description": "Adversarial code review via the Devin CLI, with real repository access and multi-model panels.",
