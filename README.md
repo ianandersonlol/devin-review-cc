@@ -19,6 +19,7 @@ Works in both Claude Code and Codex.
 /devin:review -- src/billing             # scope to paths
 /devin:review --dry-run                  # what would be reviewed; spends nothing
 /devin:review --allow-hooks              # proceed in a repo that declares hooks
+/devin:review --allow-repo-mcp           # proceed in a repo that configures MCP servers
 
 /devin:panel                             # THE FEATURE: 3 vendors, in parallel
 /devin:panel --models swe-1-7,gpt-5-6-sol-high,kimi-k3-high
@@ -260,6 +261,20 @@ This is the honest boundary. Reviews are read-only with respect to the
 *reviewer's tools*; hooks are a separate execution channel, and the tool's answer
 to them is refusal rather than a guarantee it cannot make.
 
+### Repository MCP servers are also a pre-session execution channel
+
+Devin loads project MCP configuration from `.devin/mcp_config.json` and local
+project configuration from `.devin/mcp_config.local.json`. A configured stdio
+server command starts while the session connects—before the model acts and
+before any tool permission is checked. A panel can start it once per worker.
+
+`devin-review` therefore refuses to start any session in a repository carrying
+either file (exit 8), including on the existing print transport. The error names
+the files. `--allow-repo-mcp` is the explicit override for repositories whose
+servers you have inspected and trust. This is separate from `mcp_call_tool` in
+the reviewer deny list: that rule concerns model tool calls after startup and
+cannot contain the server process that has already launched.
+
 ### The failure mode you used to hit constantly
 
 When Devin refuses a tool call in print mode, it **ends the turn and prints
@@ -391,6 +406,8 @@ Authentication is `devin auth login`, an interactive browser flow.
 | 4 | blocked by the credential pre-flight |
 | 5 | every model in a panel failed |
 | 6 | the repository declares lifecycle hooks (see above); `--allow-hooks` overrides |
+| 7 | the installed Devin CLI is incompatible with this plugin version |
+| 8 | the repository configures Devin MCP servers; `--allow-repo-mcp` overrides |
 
 Exit 3 names why: `blocked_tool` (the reviewer reached for a denied tool — it
 was already retried once with a corrective note), `empty_report` (it finished

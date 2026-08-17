@@ -62,6 +62,7 @@ export function parseArgs(argv) {
     diffMode: "branch",
     allowSecrets: false,
     allowHooks: false,
+    allowRepoMcp: false,
     focus: "",
     quiet: false,
     dryRun: false,
@@ -173,6 +174,9 @@ export function parseArgs(argv) {
         break;
       case "--allow-hooks":
         options.allowHooks = true;
+        break;
+      case "--allow-repo-mcp":
+        options.allowRepoMcp = true;
         break;
       case "--keep-links":
         options.keepLinks = true;
@@ -295,6 +299,8 @@ Options:
   --allow-secrets     skip the secret-shape pre-flight scan
   --allow-hooks       run even though the repo declares Devin lifecycle hooks
                       (they execute shell commands outside the read-only model)
+  --allow-repo-mcp    run even though the repo configures Devin MCP servers
+                      (stdio server commands start before permission checks)
   --keep-links        keep Devin's file:// annotations instead of flattening them
   --keep-artifacts    keep the temp work dir (request, session transcripts) and
                       print its path instead of deleting it; it is kept
@@ -334,4 +340,5 @@ diff of every change it made.
 
 Exit codes: 0 ok · 2 setup problem · 3 devin produced no output · 4 blocked by
 the credential pre-flight · 5 every model in a panel failed · 6 blocked because
-the repository declares lifecycle hooks.`;
+the repository declares lifecycle hooks · 7 incompatible Devin CLI · 8 blocked
+because the repository declares MCP servers.`;

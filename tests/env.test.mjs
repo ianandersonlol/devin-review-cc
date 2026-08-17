@@ -4,7 +4,11 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { detectHookSources } from "../skills/devin-review/scripts/lib/env.mjs";
+import {
+  detectHookSources,
+  detectRepoDevinConfig,
+  repoMcpConfigs,
+} from "../skills/devin-review/scripts/lib/env.mjs";
 
 const makeRepo = async () => fs.mkdtemp(path.join(os.tmpdir(), "devin-hooks-test-"));
 const write = async (root, rel, text) => {
@@ -82,5 +86,30 @@ test("every documented hook source is checked", async () => {
   await write(root, ".devin/hooks.v1.json", JSON.stringify({ Stop: [{ hooks: [] }] }));
   const found = await detectHookSources(root);
   assert.equal(found.length, 5, `expected all 5 sources, got ${found.map((f) => f.file).join(",")}`);
+  await fs.rm(root, { recursive: true, force: true });
+});
+
+// MCP stdio commands start while Devin connects the session, before tool
+// permissions exist. Both project and local scopes must therefore reach the
+// pre-flight; missing the uncommitted local spelling would leave the same code
+// execution channel open in the most common place for private configuration.
+test("both repo-scope MCP config files are detected", async () => {
+  const root = await makeRepo();
+  await write(root, ".devin/mcp_config.json", JSON.stringify({ mcpServers: { project: {} } }));
+  await write(root, ".devin/mcp_config.local.json", JSON.stringify({ mcpServers: { local: {} } }));
+  const configs = await detectRepoDevinConfig(root);
+  assert.deepEqual(repoMcpConfigs(configs), [
+    ".devin/mcp_config.json",
+    ".devin/mcp_config.local.json",
+  ]);
+  await fs.rm(root, { recursive: true, force: true });
+});
+
+test("ordinary repo config is not mistaken for MCP startup config", async () => {
+  const root = await makeRepo();
+  await write(root, ".devin/config.json", JSON.stringify({ permissions: { allow: [] } }));
+  const configs = await detectRepoDevinConfig(root);
+  assert.deepEqual(configs, [".devin/config.json"]);
+  assert.deepEqual(repoMcpConfigs(configs), []);
   await fs.rm(root, { recursive: true, force: true });
 });

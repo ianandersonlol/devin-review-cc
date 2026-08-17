@@ -47,6 +47,10 @@ node "${CLAUDE_PLUGIN_ROOT}/skills/devin-review/scripts/devin-review.mjs" review
      that is the **user's call, not yours** — show them what was found and ask.
      Their own repo with their own hooks is usually fine; a fork or someone
      else's branch is exactly why the check exists.
+   - **8** — the repository configures Devin MCP servers. Stdio server commands
+     start while the session connects, before the model or tool permissions can
+     constrain them. The output names the files. `--allow-repo-mcp` is the
+     user's decision after inspecting those servers; never add it on your own.
    - anything else — surface Devin's stderr verbatim.
 
 3. Present the review to the user **verbatim first**, unedited. Do not soften,

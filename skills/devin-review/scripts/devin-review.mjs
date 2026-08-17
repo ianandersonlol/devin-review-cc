@@ -44,7 +44,13 @@ import {
   snapshotTree,
   treeChanges,
 } from "./lib/git.mjs";
-import { detectHookSources, detectRepoDevinConfig, probeEnvironment, remediation } from "./lib/env.mjs";
+import {
+  detectHookSources,
+  detectRepoDevinConfig,
+  probeEnvironment,
+  remediation,
+  repoMcpConfigs,
+} from "./lib/env.mjs";
 import { buildRequest, buildRescueRequest } from "./lib/prompts.mjs";
 import {
   diversityWarnings,
@@ -108,6 +114,34 @@ async function guardHooks(root, options) {
   raw("");
   raw("If these hooks are yours and you trust them, re-run with --allow-hooks.");
   die("refusing to start a session in a repository that declares hooks", 6);
+}
+
+/**
+ * Refuse repository-controlled MCP startup commands before Devin sees the repo.
+ *
+ * Tool permissions cannot contain this channel: stdio MCP server commands run
+ * while the session connects, before the model acts or asks for a tool. Panel
+ * concurrency multiplies the same command across workers, so warning after the
+ * first process starts would already be too late.
+ */
+async function guardRepoMcp(root, options, knownConfigs) {
+  const configs = repoMcpConfigs(knownConfigs ?? await detectRepoDevinConfig(root));
+  if (configs.length === 0) return;
+
+  if (options.allowRepoMcp) {
+    log(`NOTE: running with repository MCP servers enabled (${configs.join(", ")}).`);
+    return;
+  }
+
+  raw("devin-review: BLOCKED — this repository configures Devin MCP servers.");
+  for (const file of configs) raw(`  ${file}`);
+  raw("");
+  raw("Devin starts repository MCP servers while the session connects, before the model");
+  raw("acts and before any tool permission is checked. A repository-shipped stdio server");
+  raw("can therefore execute its command outside the read-only reviewer boundary.");
+  raw("");
+  raw("If these servers are yours and you trust them, re-run with --allow-repo-mcp.");
+  die("refusing to start a session in a repository that configures MCP servers", 8);
 }
 
 /**
@@ -259,6 +293,20 @@ async function commandReview(options) {
       }
     }
 
+    // A repo MCP stdio command can run during session startup, before Devin's
+    // permissions exist. Check it before even asking the CLI for its roster so
+    // a blocked dry run is local, fast, and cannot start repository code.
+    const repoConfigs = await detectRepoDevinConfig(root);
+    await guardRepoMcp(root, options, repoConfigs);
+    const mcpRepoConfigs = repoMcpConfigs(repoConfigs);
+    const otherRepoConfigs = repoConfigs.filter((file) => !mcpRepoConfigs.includes(file));
+    if (otherRepoConfigs.length > 0) {
+      log(
+        `NOTE: this repository ships ${otherRepoConfigs.join(", ")}, which Devin loads alongside the ` +
+          "read-only config used here. Our deny list still applies; check the file if the repo is not yours.",
+      );
+    }
+
     const isPanel = options.models.length > 1;
 
     // Read the roster directly rather than through probeEnvironment: we only
@@ -289,18 +337,6 @@ async function commandReview(options) {
       );
     }
     for (const warning of warnings) log(`NOTE: ${warning}`);
-
-    // Print mode has to waive the workspace-trust prompt, so a repo-local Devin
-    // config is loaded without anyone being asked. Our deny list did hold
-    // against one that tried to allow what we deny — deny beats allow — but the
-    // file can still carry MCP servers and other settings, so say it is there.
-    const repoConfigs = await detectRepoDevinConfig(root);
-    if (repoConfigs.length > 0) {
-      log(
-        `NOTE: this repository ships ${repoConfigs.join(", ")}, which Devin loads alongside the ` +
-          "read-only config used here. Our deny list still applies; check the file if the repo is not yours.",
-      );
-    }
 
     const cost = estimateCost(options.models, diffBytes, roster);
 
@@ -608,6 +644,7 @@ async function commandRescue(options) {
     const branch = await currentBranch(gitPath, root);
     const mode = resolveMode(options.subcommand, options.readOnly, options.allowCommands);
 
+    await guardRepoMcp(root, options);
     await guardHooks(root, options);
     // Before the dry-run exit, for the same reason as review: a rehearsal that
     // reports OK against a CLI which would reject our first argument is worse
@@ -863,7 +900,24 @@ async function commandStatus(options) {
     }
     for (const skipped of scope.untrackedSkipped) out.push(`       skipped untracked >256KB: ${skipped}`);
     if (scope.devinConfigs?.length > 0) {
-      out.push(`       repo ships ${scope.devinConfigs.join(", ")} — outranks our read-only config`);
+      const mcpConfigs = repoMcpConfigs(scope.devinConfigs);
+      const otherConfigs = scope.devinConfigs.filter((file) => !mcpConfigs.includes(file));
+      if (otherConfigs.length > 0) {
+        out.push(`       repo ships ${otherConfigs.join(", ")} — outranks our read-only config`);
+      }
+      if (mcpConfigs.length > 0) {
+        out.push(
+          `       repo MCP: ${mcpConfigs.join(", ")} — ${
+            options.allowRepoMcp ? "override enabled" : "a session would be BLOCKED; --allow-repo-mcp overrides"
+          }`,
+        );
+      }
+    }
+    if (scope.hookSources?.length > 0) {
+      const hooks = scope.hookSources
+        .map((source) => `${source.file} [${source.events.join(", ")}]`)
+        .join(", ");
+      out.push(`       repo hooks: ${hooks} — a session would be BLOCKED; --allow-hooks overrides`);
     }
   }
 
@@ -901,6 +955,10 @@ async function collectScopePreview(options) {
     });
     const diffBytes = Buffer.byteLength(diff.text, "utf8");
     const hits = scanForSecrets(diff.text);
+    const [devinConfigs, hookSources] = await Promise.all([
+      detectRepoDevinConfig(root),
+      detectHookSources(root),
+    ]);
     return {
       root,
       branch: await currentBranch(gitPath, root),
@@ -912,7 +970,9 @@ async function collectScopePreview(options) {
       untrackedSkipped: diff.untrackedSkipped,
       secretPreflight: hits.length > 0 ? "would BLOCK" : "clear",
       secretMatches: hits.length,
-      devinConfigs: await detectRepoDevinConfig(root),
+      devinConfigs,
+      repoMcpConfigs: repoMcpConfigs(devinConfigs),
+      hookSources,
     };
   } catch (error) {
     // status is diagnostic: report the git failure rather than crashing, so the

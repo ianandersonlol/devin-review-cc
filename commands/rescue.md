@@ -38,7 +38,9 @@ Bare words are the problem statement. `--` still introduces path scoping, so
 Exit codes match the other commands: **0** report printed · **2** setup problem
 (not a git repo, devin missing) · **3** no report (`blocked_tool`, `quota`,
 `auth`) · **4** blocked by the credential pre-flight on your context diff ·
-**6** the repository declares lifecycle hooks.
+**6** the repository declares lifecycle hooks · **8** the repository configures
+MCP servers. The latter two run code before the model's tool permissions apply;
+never add their override flags without the user's explicit decision.
 
 On **3** with `blocked_tool`, do not assume nothing changed: Devin may have
 edited files and *then* reached for a denied command. The change diff is printed

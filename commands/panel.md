@@ -25,7 +25,8 @@ free. Override with `--models a,b,c`. `--concurrency N` bounds how many run at
 once (default 3).
 
 2. Exit codes are the same as `/devin:review` (including **6** for repository
-   hooks — never pass `--allow-hooks` on your own initiative), plus:
+   hooks and **8** for repository MCP startup — never pass `--allow-hooks` or
+   `--allow-repo-mcp` on your own initiative), plus:
    - **5** — *every* model produced nothing. The per-model reasons are printed;
      read them before retrying, because `quota` on all three means a different
      roster is needed, not another attempt.

@@ -31,6 +31,10 @@ Always exits **0** — it is a report, not a gate.
   to run (exit 6) until the user passes `--allow-hooks`. Explain why rather than
   reaching for the flag: hooks execute shell commands at session start, outside
   the reviewer's permission model.
+- **Repository MCP.** `a session would be BLOCKED` means project or local MCP
+  config will start server commands before permissions exist. Explain the risk;
+  `--allow-repo-mcp` is the user's override after inspection, not an automatic
+  fix.
 - **Not ready.** Send them to `/devin:setup` rather than diagnosing here.
 
 `--json` gives the same content machine-readably.

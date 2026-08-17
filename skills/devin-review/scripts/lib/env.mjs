@@ -112,7 +112,12 @@ export async function probeEnvironment({
  * been told.
  */
 export async function detectRepoDevinConfig(root) {
-  const candidates = [".devin/config.json", ".devin/config.local.json", ".devin/mcp_config.json"];
+  const candidates = [
+    ".devin/config.json",
+    ".devin/config.local.json",
+    ".devin/mcp_config.json",
+    ".devin/mcp_config.local.json",
+  ];
   const found = [];
   for (const relative of candidates) {
     try {
@@ -123,6 +128,13 @@ export async function detectRepoDevinConfig(root) {
     }
   }
   return found;
+}
+
+/** Repo-scope MCP files Devin starts during session creation. */
+export function repoMcpConfigs(configs) {
+  return (configs ?? []).filter((file) =>
+    file === ".devin/mcp_config.json" || file === ".devin/mcp_config.local.json"
+  );
 }
 
 /**

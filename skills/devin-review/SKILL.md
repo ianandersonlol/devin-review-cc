@@ -76,6 +76,7 @@ this".
 --dry-run         show what would be reviewed; spends nothing
 --allow-secrets   waive the credential pre-flight (see below)
 --allow-hooks     proceed in a repo that declares Devin lifecycle hooks
+--allow-repo-mcp  proceed in a repo that configures Devin MCP servers
 --keep-artifacts  keep the temp work dir (request, config, and any exported
                   transcript); it is kept automatically whenever a model fails,
                   and the path is printed on stderr. blocked_tool and
@@ -246,6 +247,7 @@ that; a half-applied edit is the case the user most needs to see.
 | 5 | every model in a panel failed | read the per-model reasons before retrying |
 | 6 | the repository declares lifecycle hooks | see below — do NOT pass `--allow-hooks` on your own initiative |
 | 7 | the installed `devin` CLI does not accept a flag the plugin passes | the CLI has moved underneath the plugin; report the named flag and tell the user to update the plugin. Nothing was spent, and no model ran |
+| 8 | the repository configures Devin MCP servers | see below — do NOT pass `--allow-repo-mcp` on your own initiative |
 
 Exit 4 exists because the diff is sent to a third party. Waiving it is the
 user's call, never yours.
@@ -265,6 +267,18 @@ names the files and events it found.
 as `--allow-secrets`. Show them what was found and ask. In their own repository
 with their own hooks it is usually fine; in a fork, a dependency, or a branch
 from someone else, it is the whole reason the check exists.
+
+### Exit 8: repository MCP servers
+
+Devin loads `.devin/mcp_config.json` and `.devin/mcp_config.local.json` while a
+session connects. A stdio server's command runs at that point, before the model
+acts and before tool permissions exist; panels can start the same command once
+per worker. Denying `mcp_call_tool` does not constrain server startup.
+
+Every subcommand that starts a session therefore refuses these files and names
+them. `--allow-repo-mcp` overrides the refusal only when the user has inspected
+and trusts the configured servers. Treat it like `--allow-hooks`: show the
+blocker and ask rather than adding the flag yourself.
 
 ### The failure classes behind exit 3
 

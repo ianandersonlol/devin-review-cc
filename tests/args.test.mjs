@@ -209,6 +209,11 @@ test("repository hooks are only run with an explicit opt-in", () => {
   assert.equal(parseArgs(["--allow-hooks"]).allowHooks, true);
 });
 
+test("repository MCP startup is only allowed with an explicit opt-in", () => {
+  assert.equal(parseArgs([]).allowRepoMcp, false);
+  assert.equal(parseArgs(["--allow-repo-mcp"]).allowRepoMcp, true);
+});
+
 // ── artifact keeping and the sandbox escape hatch ────────────────────────────
 
 test("--keep-artifacts and --no-sandbox parse and default off", () => {
