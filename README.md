@@ -5,7 +5,7 @@ with read access to your real repository — and, because one CLI fronts many
 vendors' models, the ability to run **several reviewers over the same diff at
 once**.
 
-Works in both Claude Code and Codex.
+Works in Claude Code, Codex, and Antigravity.
 
 ## Usage
 
@@ -388,11 +388,40 @@ opt-in, not a containment boundary. Commit or stash before using it, and read th
 diff afterwards. The no-refactor and no-weakening-tests rules are prompt-level
 instructions, not enforcement, for the same reason.
 
+## Installing
+
+Claude Code takes it as a marketplace plugin; the manifest is
+`.claude-plugin/plugin.json`. Codex reads `.codex-plugin/plugin.json`.
+Antigravity reads a third manifest, `plugin.json` at the repository root:
+
+```bash
+agy plugin install https://github.com/ianandersonlol/devin-review-cc
+```
+
+That clones the repo, mounts `skills/devin-review`, and converts all seven
+`commands/*.md` into Antigravity slash commands — `/devin:review` and `/review`
+both resolve, `$ARGUMENTS` is substituted, and `${CLAUDE_PLUGIN_ROOT}` expands
+to the installed plugin root. Two things differ from Claude Code there:
+
+- **Pass `--repo <absolute path>`.** `agy` runs every shell command from
+  `~/.gemini/antigravity-cli/scratch` rather than the open workspace, and
+  publishes the workspace path in no environment variable, so the tool cannot
+  find your repository on its own. The commands say so, and if it is forgotten
+  the exit-2 message names the flag rather than uselessly suggesting `cd`.
+- **`allowed-tools:` is not enforced.** Antigravity ignores that frontmatter
+  key, so the tool fencing Claude Code applies does not exist there. It costs
+  the read-only commands nothing — they are read-only by construction in the
+  script, not by frontmatter — but `/devin:rescue` writes to your working tree,
+  and there it is one fewer guard rail.
+
+Slash commands are also registered from a cache: a freshly installed or renamed
+command may not appear until the CLI reloads.
+
 ## Requirements
 
 Node 18+, `git`, and an authenticated `devin` on `PATH`. That makes it a local
-toolchain: it works in Claude Code and local Cowork, but not in cloud Cowork,
-claude.ai/code, or chat.
+toolchain: it works in Claude Code, Codex, Antigravity and local Cowork, but not
+in cloud Cowork, claude.ai/code, or chat.
 
 ```bash
 /devin:setup     # checks all of the above and names the specific fix

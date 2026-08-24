@@ -32,6 +32,11 @@ Arguments: $ARGUMENTS
 node "${CLAUDE_PLUGIN_ROOT}/skills/devin-review/scripts/devin-review.mjs" rescue $ARGUMENTS
 ```
 
+Add `--repo <absolute path to the repository>` if the shell's working directory
+is not inside it. Claude Code starts commands in your project, so it never needs
+this; Antigravity runs every command from its own scratch directory, so it
+always does.
+
 Bare words are the problem statement. `--` still introduces path scoping, so
 `rescue "tests fail" -- src/auth` narrows the context diff to `src/auth`.
 

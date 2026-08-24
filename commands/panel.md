@@ -20,6 +20,11 @@ Arguments: $ARGUMENTS
 node "${CLAUDE_PLUGIN_ROOT}/skills/devin-review/scripts/devin-review.mjs" panel $ARGUMENTS
 ```
 
+Add `--repo <absolute path to the repository>` if the shell's working directory
+is not inside it. Claude Code starts commands in your project, so it never needs
+this; Antigravity runs every command from its own scratch directory, so it
+always does.
+
 Default council is `kimi-k3-high,grok-4-6-high,deepseek-v4-flash-high,glm-5-2` —
 four vendors: Moonshot, xAI, DeepSeek, Zhipu. Three of them are paid, so a bare
 panel costs a few tens of cents on a normal diff. Override with `--models a,b,c`.

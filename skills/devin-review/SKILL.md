@@ -37,6 +37,15 @@ If a relative path does not resolve, use the absolute path to
 `scripts/devin-review.mjs` inside this skill directory. In Claude Code the
 `/devin:*` slash commands already handle this.
 
+Every subcommand except `setup` and `models` works on a git repository, found by
+default from the process's working directory. **If your shell does not start in
+the repository, pass `--repo <absolute path>`.** Claude Code starts plugin
+commands in the user's project, so it never needs the flag. Antigravity always
+does: `agy` runs every shell command from `~/.gemini/antigravity-cli/scratch`
+whatever workspace is open, and publishes the workspace path in no environment
+variable, so nothing can infer it for you. Without the flag there the tool
+correctly reports that it is not inside a git repository.
+
 ### Subcommands
 
 | Subcommand | What it does |
@@ -59,6 +68,8 @@ this".
 
 ```
 --base REF        compare against REF (default: origin/HEAD, main, or master)
+--repo PATH       the repository to work on (default: the current directory);
+                  required on hosts that run commands outside your workspace
 --staged          staged changes only
 --uncommitted     uncommitted only (vs HEAD)
 --lens defect|design  override the lens the subcommand picked

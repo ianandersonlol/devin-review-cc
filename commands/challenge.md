@@ -23,6 +23,11 @@ Arguments: $ARGUMENTS
 node "${CLAUDE_PLUGIN_ROOT}/skills/devin-review/scripts/devin-review.mjs" challenge $ARGUMENTS
 ```
 
+Add `--repo <absolute path to the repository>` if the shell's working directory
+is not inside it. Claude Code starts commands in your project, so it never needs
+this; Antigravity runs every command from its own scratch directory, so it
+always does.
+
 `--panel` or `--models a,b,c` works here too, and design is where disagreement
 between models is most informative — there is rarely one right answer.
 

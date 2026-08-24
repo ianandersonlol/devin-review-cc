@@ -62,6 +62,10 @@ export function parseArgs(argv) {
     timeout: TIMEOUT_DEFAULT,
     timeoutMs: parseDuration(TIMEOUT_DEFAULT),
     base: "",
+    // Where the repository is. Empty means "wherever the process was started",
+    // which is right under every host that runs plugin commands from the user's
+    // cwd. Antigravity is the exception — see resolveRepo() in devin-review.mjs.
+    repo: "",
     diffMode: "branch",
     allowSecrets: false,
     allowHooks: false,
@@ -94,6 +98,9 @@ export function parseArgs(argv) {
     switch (arg) {
       case "--base":
         options.base = requireValue("--base", args);
+        break;
+      case "--repo":
+        options.repo = requireValue("--repo", args);
         break;
       case "--model":
         options.model = requireValue("--model", args);
@@ -286,6 +293,9 @@ Subcommands:
 
 Options:
   --base REF          compare against REF (default: auto — origin/HEAD, main, or master)
+  --repo PATH         the repository to work on (default: the current directory).
+                      Needed on hosts that run shell commands somewhere other
+                      than your workspace — Antigravity is one; see the skill.
   --staged            review only staged changes
   --uncommitted       review only uncommitted changes (vs HEAD)
   --lens defect|design  override the lens for the chosen subcommand

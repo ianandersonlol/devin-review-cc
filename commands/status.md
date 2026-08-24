@@ -13,6 +13,11 @@ Arguments: $ARGUMENTS
 node "${CLAUDE_PLUGIN_ROOT}/skills/devin-review/scripts/devin-review.mjs" status $ARGUMENTS
 ```
 
+Add `--repo <absolute path to the repository>` if the shell's working directory
+is not inside it. Claude Code starts commands in your project, so it never needs
+this; Antigravity runs every command from its own scratch directory, so it
+always does.
+
 ## What to do with it
 
 Always exits **0** — it is a report, not a gate.

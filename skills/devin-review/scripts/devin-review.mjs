@@ -86,6 +86,40 @@ const die = (message, code = 1) => {
 };
 
 /**
+ * Find the repository to work on: an explicit --repo, else the process cwd.
+ *
+ * Claude Code runs a plugin's commands from the user's working directory, so
+ * cwd IS the repository and the flag is never needed there. Antigravity does
+ * not work that way: `agy` executes every shell command from
+ * ~/.gemini/antigravity-cli/scratch regardless of which workspace is open, and
+ * publishes the workspace path in no environment variable — verified by running
+ * `pwd` inside a live agy session, which is also how this bug was found. Under
+ * that host cwd detection finds no repository at all, so --repo is the only way
+ * to say which one is meant.
+ */
+async function resolveRepo(gitPath, options) {
+  return repoRoot(gitPath, options.repo || process.cwd());
+}
+
+/**
+ * Why no repository was found, phrased for whoever is asking.
+ *
+ * "cd into your project" is useless advice under a host that ignores cwd, and
+ * an agent that dutifully follows it burns a turn discovering as much. So when
+ * the host is one of those, name the flag that actually works instead.
+ */
+function repoHint(options) {
+  if (options.repo) return ` — --repo '${options.repo}' does not resolve to one`;
+  if (process.env.ANTIGRAVITY_AGENT) {
+    return (
+      " — Antigravity runs shell commands from its own scratch directory rather than your " +
+      "workspace, so cd cannot reach it: pass --repo with the absolute path to the repository"
+    );
+  }
+  return " — cd into your project first";
+}
+
+/**
  * Refuse to run inside a repository that declares lifecycle hooks.
  *
  * Devin executes project hooks as shell commands at session start, before the
@@ -226,8 +260,8 @@ async function commandReview(options) {
     die(`devin not found on PATH. Install the Devin CLI and re-run; see ${DEVIN_URL}`, 2);
   }
 
-  const root = await repoRoot(gitPath);
-  if (!root) die("not inside a git repository — cd into your project first", 2);
+  const root = await resolveRepo(gitPath, options);
+  if (!root) die(`not inside a git repository${repoHint(options)}`, 2);
 
   // Validate an explicit --base up front so we never silently review the wrong
   // thing after printing an error.
@@ -589,10 +623,11 @@ async function commandRescue(options) {
     die(`devin not found on PATH. Install the Devin CLI and re-run; see ${DEVIN_URL}`, 2);
   }
 
-  const root = await repoRoot(gitPath);
+  const root = await resolveRepo(gitPath, options);
   if (!root) {
     die(
-      "rescue must run inside a git repository — it edits files, and git is what makes that undoable",
+      "rescue must run inside a git repository (it edits files, and git is what makes that undoable)" +
+        repoHint(options),
       2,
     );
   }
@@ -854,7 +889,7 @@ async function commandStatus(options) {
   // Running them concurrently means status costs max(local, remote) instead of
   // the sum, so an offline machine still gets its diff preview promptly.
   const [environment, scope] = await Promise.all([
-    probeEnvironment({ modelsTimeout: 8000 }),
+    probeEnvironment({ modelsTimeout: 8000, cwd: options.repo || process.cwd() }),
     collectScopePreview(options),
   ]);
   const report = { ready: environment.ready, environment, scope };
@@ -879,7 +914,7 @@ async function commandStatus(options) {
   }
 
   if (!report.scope) {
-    out.push("Repo:  not inside a git repository — cd into your project.");
+    out.push(`Repo:  not inside a git repository${repoHint(options)}`);
   } else if (report.scope.error) {
     out.push(`Repo:  ${report.scope.error}`);
   } else {
@@ -936,7 +971,7 @@ async function commandStatus(options) {
 async function collectScopePreview(options) {
   const gitPath = await findGit();
   if (!gitPath) return null;
-  const root = await repoRoot(gitPath);
+  const root = await resolveRepo(gitPath, options);
   if (!root) return null;
 
   if (options.base && !(await refExists(gitPath, root, options.base))) {

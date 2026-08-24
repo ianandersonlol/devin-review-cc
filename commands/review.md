@@ -23,6 +23,11 @@ Arguments: $ARGUMENTS
 node "${CLAUDE_PLUGIN_ROOT}/skills/devin-review/scripts/devin-review.mjs" review $ARGUMENTS
 ```
 
+Add `--repo <absolute path to the repository>` if the shell's working directory
+is not inside it. Claude Code starts commands in your project, so it never needs
+this; Antigravity runs every command from its own scratch directory, so it
+always does.
+
 2. Interpret the exit code before anything else:
    - **0** — review printed. Continue to step 3.
    - **4** — blocked by the secret-shape scan. Do NOT rerun with
