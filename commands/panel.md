@@ -6,9 +6,9 @@ allowed-tools: Bash(node:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git
 
 Run several different models over the **same diff at the same time**, each
 blind to the others, and compare what they found. This is what the Devin CLI is
-uniquely good for: one binary fronts models from Moonshot, xAI, DeepSeek, Zhipu,
-Cognition, OpenAI, Google and others, so a genuine multi-vendor panel is a single
-command rather than four separate toolchains.
+uniquely good for: one binary fronts models from Cognition, Zhipu, DeepSeek,
+Moonshot, xAI, OpenAI, Google and others, so a genuine multi-vendor panel is a
+single command rather than several separate toolchains.
 
 Arguments: $ARGUMENTS
 
@@ -25,10 +25,11 @@ is not inside it. Claude Code starts commands in your project, so it never needs
 this; Antigravity runs every command from its own scratch directory, so it
 always does.
 
-Default council is `kimi-k3-high,grok-4-6-high,deepseek-v4-flash-high,glm-5-2` —
-four vendors: Moonshot, xAI, DeepSeek, Zhipu. Three of them are paid, so a bare
-panel costs a few tens of cents on a normal diff. Override with `--models a,b,c`.
-`--concurrency N` bounds how many run at once (default 4, so the council runs in
+Default council is `swe-2-max,glm-5-3-flash-max,deepseek-v4-1-flash-max` — three
+vendors: Cognition, Zhipu, DeepSeek. `swe-2-max` is free and the two flash models
+are the cheapest 1M-context reviewers on the roster, so a bare panel runs a
+couple of cents on a normal diff. Override with `--models a,b,c`.
+`--concurrency N` bounds how many run at once (default 3, so the council runs in
 one wave).
 
 2. Exit codes are the same as `/devin:review` (including **6** for repository
@@ -49,14 +50,14 @@ one wave).
    completion order; the **Panel summary** at the end holds the comparison
    table and the **corroboration map** splitting findings into corroborated and
    single-source. Read the summary first anyway, then the reviews — and keep
-   that structure when presenting: do not collapse four reviews into one
+   that structure when presenting: do not collapse three reviews into one
    summary.
 
    Because reviews stream, run the panel as a background task and poll its
    output: the fastest model answers minutes before the slowest, and you can
    verify its findings against the code while the rest are still running.
 
-   Findings are addressable as `model#id` (e.g. `swe-1-7#2`). Use those addresses
+   Findings are addressable as `model#id` (e.g. `swe-2-max#2`). Use those addresses
    when you discuss them rather than re-quoting the text, and pass `--json` if
    you want the validated structure to filter or sort on.
 
@@ -90,10 +91,11 @@ one wave).
 - Model diversity is the entire point. A panel of `claude-opus-5-high` and
   `claude-sonnet-5-high` costs twice as much to buy an echo — the script warns
   about single-family panels and about Claude models, which correlate with you.
-- Cost scales with the number of paid models, and three of the four default
-  council members are paid. The script prints a rough estimate before running;
-  `--dry-run` prints it and stops. `--models swe-1-7,glm-5-2` is the free pair,
-  and makes a panel that costs nothing at all.
+- Cost scales with the number of paid models, and only two of the three default
+  council members are paid at all — cents, not dollars. The script prints a
+  rough estimate before running; `--dry-run` prints it and stops. `--models
+  swe-2-max,swe-2-high` costs nothing whatsoever, but buys one vendor's opinion
+  twice; the default council is the better trade at a couple of cents.
 - For the riskiest changes, a panel here plus `/agy:review` and
-  `/codex:adversarial-review` gives six labs' opinions. Reconcile them all;
+  `/codex:adversarial-review` gives five labs' opinions. Reconcile them all;
   never ask one tool to produce another's.

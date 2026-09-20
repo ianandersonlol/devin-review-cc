@@ -36,7 +36,7 @@ already contains a per-component status and an ordered remediation list.
    - **logged in but models did not respond.** Connectivity or a proxy. Devin
      reads proxy settings from `~/.config/devin/config.json`.
 
-   - **default model missing.** The account cannot use `deepseek-v4-flash-high`.
+   - **default model missing.** The account cannot use `swe-2-max`.
      Run `/devin:models` and pass `--model` with something it can.
 
    - **node too old.** The scripts need Node 18+. Point at <https://nodejs.org>.

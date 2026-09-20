@@ -42,7 +42,7 @@ always does.
      repo. **`empty_report`** means it finished on narration with no findings
      or verdict. For either, a different model is the pragmatic next step.
      `quota` means the account is out of budget for that model — a free model
-     (`swe-1-7`, `glm-5-2`) will work. `auth` means `devin auth login`.
+     (the `swe-2` family) will work. `auth` means `devin auth login`.
    - **2** — setup problem (not a git repo, bad ref, unknown model, devin
      missing). Suggest `/devin:setup`, which diagnoses exactly what is wrong.
    - **6** — the repository declares Devin lifecycle **hooks**. Devin runs these
@@ -74,15 +74,16 @@ always does.
 
 - Default scope is the working tree vs the merge-base with `origin/HEAD`/`main`/
   `master`, so committed-on-branch **and** uncommitted work are reviewed together.
-- The default model is `deepseek-v4-flash-high`: 1M of context at $0.14/$0.28 per
-  MTok, so cents per review, and from DeepSeek rather than Anthropic. Escalate
-  with `--model` when the change is genuinely risky, or drop to a free reviewer
-  (`swe-1-7`, `glm-5-2`) when it is not — `/devin:models` lists what the account
-  can use, with prices.
+- The default model is `swe-2-max`: free, from Cognition rather than Anthropic,
+  and trained on software engineering specifically. Its 262K context is the one
+  place it gives ground — on a large change, escalate with `--model` to a
+  1M-window reviewer (`deepseek-v4-1-flash-max` or `glm-5-3-flash-max`, both
+  still cents per review), and escalate further when the change is genuinely
+  risky. `/devin:models` lists what the account can use, with prices.
 - **Do not pick a `claude-*` model.** It correlates with you, so it is not an
   independent voice; the script warns when you do. Prefer a different lab.
 - **This command is one voice.** For several, use `/devin:panel`, whose default
-  council is four vendors at once — the feature this plugin exists for. For a
+  council is three vendors at once — the feature this plugin exists for. For a
   cross-tool council, run this alongside the agy (Gemini) and Codex (GPT)
   plugins and reconcile the results yourself.
 - Paid models consume Devin usage quota; free models do not. `--dry-run` shows
