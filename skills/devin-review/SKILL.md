@@ -73,10 +73,10 @@ this".
 --staged          staged changes only
 --uncommitted     uncommitted only (vs HEAD)
 --lens defect|design  override the lens the subcommand picked
---model ID        single reviewer (default: deepseek-v4-flash-high)
+--model ID        single reviewer (default: swe-2-max)
 --models a,b,c    run these in parallel and report each separately
---panel           shorthand for the default four-vendor council
---concurrency N   how many panel models run at once (default 4)
+--panel           shorthand for the default three-vendor council
+--concurrency N   how many panel models run at once (default 3)
 --focus "TEXT"    steer the reviewer, e.g. --focus "auth and data loss"
 --timeout DUR     per-model wall clock, or 'none' (default: 45m). A generous
                   backstop for a HUNG run, not a deadline: a kill discards the
@@ -117,7 +117,7 @@ Every finding carries `severity`, `title`, `body`, `file`, `line_start`,
 
 For you as the consumer this means:
 
-- **Cite findings by address.** They are numbered per model: `swe-1-7#2`. Use
+- **Cite findings by address.** They are numbered per model: `swe-2-max#2`. Use
   those when reporting to the user or when asking for a follow-up, rather than
   re-quoting the text.
 - **Read `grounding` before you trust a claim.** `verified` means the reviewer
@@ -201,16 +201,20 @@ nothing. Treat their silence as missing data, never as agreement.
 
 ## Model choice
 
-Default is `deepseek-v4-flash-high` — 1M of context at $0.14/$0.28 per MTok, so
-cents per review, and from DeepSeek rather than Anthropic. Drop to `swe-1-7` or
-`glm-5-2` (both free) when the diff does not warrant even that.
+Default is `swe-2-max` — free, from Cognition rather than Anthropic, and trained
+on software engineering specifically. The one thing it gives up is context: 262K
+against the 1M of the flash models. On a large diff that is the binding
+constraint, so escalate with `--model deepseek-v4-1-flash-max` or
+`--model glm-5-3-flash-max` (1M each, still cents per review) rather than
+scoping the review down.
 
-Default council is `kimi-k3-high,grok-4-6-high,deepseek-v4-flash-high,glm-5-2`:
-four vendors — Moonshot, xAI, DeepSeek, Zhipu — so one provider's quota
-exhaustion mid-week costs a quarter of the council rather than the whole review.
-Three of the four are paid, so a bare `panel` is a few tens of cents on a normal
-diff rather than free; say so if the user is cost-sensitive, and offer
-`--models swe-1-7,glm-5-2` as the zero-cost pair.
+Default council is `swe-2-max,glm-5-3-flash-max,deepseek-v4-1-flash-max`: three
+vendors — Cognition, Zhipu, DeepSeek — so one provider's quota exhaustion
+mid-week costs a third of the council rather than the whole review. One member is
+free and the other two are the cheapest 1M-context reviewers on the roster, so a
+bare `panel` is a couple of cents on a normal diff. The council also spans the
+context range deliberately: if `swe-2-max` overflows on a large diff, the two
+flash members still return a review.
 
 **Never pick a `claude-*` model.** The entire value here is an *independent*
 voice; a model from the same family as the agent driving the review shares its
@@ -325,7 +329,7 @@ blocker and ask rather than adding the flag yourself.
   retryable; report the named flag and suggest updating the plugin. (`--sandbox`
   is exempt — a CLI too old to know it simply falls back to screened mode.)
 - **`quota`** — the account is out of budget for that model. Retrying will not
-  help; a free model (`swe-1-7`, `glm-5-2`) will.
+  help; a free model (the `swe-2` family) will.
 - **`auth`** — `devin auth login`, which is interactive and cannot be done for
   the user.
 - **`org_policy`** — an organisation policy blocks something. Report it as-is.

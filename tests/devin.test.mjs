@@ -314,6 +314,22 @@ test("parseModels marks free and beta models", () => {
   assert.equal(swe.context, 262000);
 });
 
+test("parseModels reads the current CLI's price spelling, cached input and all", () => {
+  // The CLI moved from "$3 / MTok In · $15 / MTok Out" to a three-term form
+  // that inserts a cached-input price between the two we want. Reading the
+  // cached term as the input price understates a panel by an order of
+  // magnitude, so it is the case worth pinning.
+  const { models } = parseModels(
+    "GLM-5.3 Flash (glm-5.3-flash)\n" +
+      "  glm-5-3-flash-max   GLM-5.3 Flash Max  " +
+      "[1M context, $0.15 / 1M Input \u00b7 $0.03 / 1M Cached input \u00b7 $0.5 / 1M Output]\n",
+  );
+  assert.equal(models[0].inputPrice, 0.15, "cached input must not be read as the input price");
+  assert.equal(models[0].outputPrice, 0.5);
+  assert.equal(models[0].free, false);
+  assert.equal(models[0].context, 1e6);
+});
+
 test("parseModels handles a raw token count without a K/M suffix", () => {
   const kimi = parseModels(SAMPLE).models.find((m) => m.id === "kimi-k3-high");
   assert.equal(kimi.context, 1048576);

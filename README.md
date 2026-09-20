@@ -21,8 +21,8 @@ Works in Claude Code, Codex, and Antigravity.
 /devin:review --allow-hooks              # proceed in a repo that declares hooks
 /devin:review --allow-repo-mcp           # proceed in a repo that configures MCP servers
 
-/devin:panel                             # THE FEATURE: 4 vendors, in parallel
-/devin:panel --models swe-1-7,gpt-5-6-sol-high,kimi-k3-high
+/devin:panel                             # THE FEATURE: 3 vendors, in parallel
+/devin:panel --models swe-2-max,gpt-5-6-sol-high,kimi-k3-high
 /devin:panel --concurrency 2             # bound how many run at once
 
 /devin:challenge                         # challenge the design, not the bugs
@@ -43,7 +43,7 @@ node /path/to/devin-review-cc/skills/devin-review/scripts/devin-review.mjs panel
 ## Why a panel
 
 Every other review plugin gives you one model's opinion. The Devin CLI reaches
-Moonshot's Kimi K3, xAI's Grok, DeepSeek, Zhipu's GLM, Cognition's SWE models,
+Cognition's SWE models, Zhipu's GLM, DeepSeek, Moonshot's Kimi K3, xAI's Grok,
 OpenAI's GPT-5.6 and Anthropic's Claude through a single binary — so `panel` runs
 several of them over the identical diff, in parallel, each blind to the others.
 
@@ -88,13 +88,19 @@ tiers reviewing the same diff is one opinion billed twice. The tool warns about
 single-family panels, and about `claude-*` models, which correlate with the
 assistant orchestrating the review and therefore share its blind spots.
 
-The default council is `kimi-k3-high,grok-4-6-high,deepseek-v4-flash-high,glm-5-2`
-— four vendors: Moonshot, xAI, DeepSeek, Zhipu. Spreading across four accounts is
+The default council is `swe-2-max,glm-5-3-flash-max,deepseek-v4-1-flash-max`
+— three vendors: Cognition, Zhipu, DeepSeek. Spreading across three accounts is
 a robustness choice as much as a decorrelation one: paid capacity is what runs
-out mid-week, and one provider having a bad hour costs you a quarter of the
+out mid-week, and one provider having a bad hour costs you a third of the
 council rather than the council. A partially failed panel still prints what it
-got and names what it lost. `glm-5-2` is free; the other three run a few tens of
-cents on a normal diff, and `--dry-run` prices it before you spend anything.
+got and names what it lost. The spread is also a context spread — `swe-2-max`
+has a 262K window against the flash models' 1M, so a diff that overflows the
+free member still gets reviewed by the other two.
+
+`swe-2-max` is free outright and the other two are the cheapest 1M-context
+reviewers on the roster, so a bare panel runs a couple of cents on a normal diff
+rather than the few tens of cents a frontier council costs. `--dry-run` prices
+it before you spend anything.
 
 ## The findings contract
 
@@ -123,7 +129,7 @@ and correlated, not to discipline the thinking.
 
 Three consequences worth knowing:
 
-- **Findings are addressable.** `swe-1-7#2` refers to one specific claim, so a
+- **Findings are addressable.** `swe-2-max#2` refers to one specific claim, so a
   review can be discussed without quoting it back.
 - **`grounding` is reported and used.** `verified` means the reviewer opened the
   call sites; `inferred` means it reasoned from the diff. It defaults to
@@ -457,15 +463,16 @@ your machine, so waiving the scan is the user's call.
 
 ## Cost
 
-Paid models consume Devin usage quota; `swe-1-7` and `glm-5-2` are free. A panel
+Paid models consume Devin usage quota; the `swe-2` family is free. A panel
 multiplies cost by the number of paid members, so the tool prints a rough
 estimate before it runs and `--dry-run` prints it and stops. `models` shows live
-per-MTok pricing read from your account rather than a hardcoded table.
+per-million-token pricing read from your account rather than a hardcoded table —
+which models are free moves between releases, so read it off the listing rather
+than off this paragraph.
 
-Three of the four default council members are paid, so a bare `/devin:panel` is
-not free. The cheap end of the roster still is: `--models glm-5-2,swe-1-7` costs
-nothing at all, and the single-reviewer default (`deepseek-v4-flash-high`, at
-$0.14/$0.28 per MTok) is cents per review.
+The single-reviewer default (`swe-2-max`) costs nothing at all. Two of the three
+default council members are paid, but both are flash models at cents per million
+tokens, so a bare `/devin:panel` is a couple of cents rather than free.
 
 ## Known quirks that are not this plugin's doing
 

@@ -13,35 +13,41 @@ import { run, which } from "./exec.mjs";
 /**
  * Default single reviewer.
  *
- * DeepSeek V4 Flash: 1M of context at $0.14/$0.28 per MTok, which is cents per
- * review — cheap enough to run on every branch, and a review you can afford to
- * run habitually beats a better review you ration. The 1M window matters more
- * here than the price: a reviewer with repo access reads far more than the diff
- * it was handed, and a small context turns "verify this against its call sites"
- * into "guess". Also the member of the council with the least in common with the
- * assistant orchestrating it (see CORRELATED_PREFIXES).
+ * SWE-2 Max: free on this account, and a review that costs nothing is a review
+ * you run on every branch — habitual beats better-but-rationed for a second
+ * opinion. Cognition trains it on software engineering specifically, and it is
+ * as far from the assistant orchestrating the review as the roster gets (see
+ * CORRELATED_PREFIXES).
+ *
+ * The trade it makes is context: 262K rather than the 1M of the flash models
+ * below. A reviewer with repo access reads far more than the diff it was handed,
+ * so a genuinely large change is the case where this default is the wrong one —
+ * `context_overflow` says so explicitly, and `--model deepseek-v4-1-flash-max`
+ * (1M, and still cents) is the escalation.
  */
-export const MODEL_DEFAULT = "deepseek-v4-flash-high";
+export const MODEL_DEFAULT = "swe-2-max";
 
 /**
  * Default panel.
  *
- * Four *vendors*, not four checkpoints: Moonshot, xAI, DeepSeek, Zhipu. The
- * whole value of a panel is decorrelated error — two models from one lab tend to
- * miss the same things, so a panel of siblings costs N times as much to buy back
- * very little. Deliberately excludes claude-* (see CORRELATED_PREFIXES).
+ * Three *vendors*, not three checkpoints: Cognition, Zhipu, DeepSeek. The whole
+ * value of a panel is decorrelated error — two models from one lab tend to miss
+ * the same things, so a panel of siblings costs N times as much to buy back very
+ * little. Deliberately excludes claude-* (see CORRELATED_PREFIXES).
  *
  * Vendor spread is also the robustness argument. A default panel that returns
  * nothing the moment one provider trips a quota or has a bad hour is a default
- * panel nobody trusts; four independent accounts behind one binary means a
- * failure takes a quarter of the panel, not the panel. `glm-5-2` is free, so
- * `--models glm-5-2` is the zero-cost fallback; --models takes anything.
+ * panel nobody trusts; independent accounts behind one binary mean a failure
+ * takes a third of the panel, not the panel.
  *
- * Cost is deliberately not minimised. This roster runs a few tens of cents on a
- * normal diff, which is the right trade for a second opinion on a change you are
- * about to merge — `devin-review panel --dry-run` prices it before you commit.
+ * Cost is close to nothing and that is not a compromise here: `swe-2-max` is
+ * free outright, and the two flash models are the cheapest 1M-context reviewers
+ * on the roster, so a normal diff runs a couple of cents rather than the few
+ * tens of cents the previous frontier council cost. The two flash members also
+ * carry the context this panel's free member lacks — `devin-review panel
+ * --dry-run` prices any override before you commit to it.
  */
-export const PANEL_DEFAULT = ["kimi-k3-high", "grok-4-6-high", "deepseek-v4-flash-high", "glm-5-2"];
+export const PANEL_DEFAULT = ["swe-2-max", "glm-5-3-flash-max", "deepseek-v4-1-flash-max"];
 
 /**
  * Models that share a lineage with the Claude Code session orchestrating this
@@ -181,8 +187,9 @@ export async function devinAuthStatus(devinPath, timeout = 20000) {
  * Devin prints families as headers with their member checkpoints indented
  * beneath, each carrying a bracketed spec:
  *
- *   Kimi K3 (kimi-k3)
- *     kimi-k3-high   Kimi K3 High  [1048576 context, $3 / MTok In · $15 / MTok Out]
+ *   GLM-5.3 Flash (glm-5.3-flash)
+ *     glm-5-3-flash-max   GLM-5.3 Flash Max  [1M context, $0.15 / 1M Input ·
+ *                         $0.03 / 1M Cached input · $0.5 / 1M Output]
  *
  * We parse rather than hardcode because model availability is per-account and
  * the roster moves. Pricing is parsed for the same reason a fuel gauge exists:
@@ -243,10 +250,16 @@ function parseSpec(spec) {
     out.context = unit === "M" ? value * 1e6 : unit === "K" ? value * 1e3 : value;
   }
 
-  // "$3 / MTok In · $15 / MTok Out" — the separator is a non-ASCII middot, so
-  // match each half independently rather than splitting on it.
-  const input = spec.match(/\$([0-9.]+)\s*\/\s*MTok\s*In/i);
-  const output = spec.match(/\$([0-9.]+)\s*\/\s*MTok\s*Out/i);
+  // Two spellings in the wild, because the CLI changed its mind:
+  //   "$3 / MTok In · $15 / MTok Out"                      (older)
+  //   "$3 / 1M Input · $0.3 / 1M Cached input · $15 / 1M Output"   (current)
+  // The separator is a non-ASCII middot, so match each half independently
+  // rather than splitting on it. The cached-input term must NOT be read as the
+  // input price — it is five to ten times cheaper, and mistaking it understates
+  // a panel by an order of magnitude. It cannot match here because "Cached"
+  // sits between the unit and "input", which `\s*In` will not cross.
+  const input = spec.match(/\$([0-9.]+)\s*\/\s*(?:MTok|1M)\s*In(?:put)?\b/i);
+  const output = spec.match(/\$([0-9.]+)\s*\/\s*(?:MTok|1M)\s*Out(?:put)?\b/i);
   if (input) out.inputPrice = Number.parseFloat(input[1]);
   if (output) out.outputPrice = Number.parseFloat(output[1]);
   return out;
