@@ -52,9 +52,9 @@ export function parseArgs(argv) {
     models: [],
     modelExplicit: false,
     modelsExplicit: false,
-    // Sized to the default panel, so a bare `panel` runs in one wave rather than
-    // holding its fourth reviewer back behind the slowest of the first three —
-    // which would roughly double the wall clock of the most common invocation.
+    // Sized to the default panel, so a bare `panel` runs in one wave. Any
+    // smaller and the last reviewer waits behind the slowest of the others,
+    // roughly doubling the wall clock of the most common invocation.
     concurrency: PANEL_DEFAULT.length,
     // A generous default backstop, not a tight deadline: high enough to clear
     // any real review, low enough to bound a hung run. `--timeout none` opts

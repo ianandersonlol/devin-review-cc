@@ -188,8 +188,12 @@ export async function devinAuthStatus(devinPath, timeout = 20000) {
  * beneath, each carrying a bracketed spec:
  *
  *   GLM-5.3 Flash (glm-5.3-flash)
- *     glm-5-3-flash-max   GLM-5.3 Flash Max  [1M context, $0.15 / 1M Input ·
- *                         $0.03 / 1M Cached input · $0.5 / 1M Output]
+ *     glm-5-3-flash-max   GLM-5.3 Flash Max  [1M context, $0.15 / 1M Input · …]
+ *
+ * One member per line, spec included — the CLI never wraps a spec, and this
+ * parser would not reassemble it if it did (a continuation line would read as
+ * another member). The example is elided for width; the real line carries the
+ * cached-input and output prices too.
  *
  * We parse rather than hardcode because model availability is per-account and
  * the roster moves. Pricing is parsed for the same reason a fuel gauge exists:
@@ -253,13 +257,19 @@ function parseSpec(spec) {
   // Two spellings in the wild, because the CLI changed its mind:
   //   "$3 / MTok In · $15 / MTok Out"                      (older)
   //   "$3 / 1M Input · $0.3 / 1M Cached input · $15 / 1M Output"   (current)
-  // The separator is a non-ASCII middot, so match each half independently
-  // rather than splitting on it. The cached-input term must NOT be read as the
-  // input price — it is five to ten times cheaper, and mistaking it understates
-  // a panel by an order of magnitude. It cannot match here because "Cached"
-  // sits between the unit and "input", which `\s*In` will not cross.
-  const input = spec.match(/\$([0-9.]+)\s*\/\s*(?:MTok|1M)\s*In(?:put)?\b/i);
-  const output = spec.match(/\$([0-9.]+)\s*\/\s*(?:MTok|1M)\s*Out(?:put)?\b/i);
+  //
+  // The cached-input term must NOT be read as the input price: it is five to
+  // ten times cheaper, so mistaking it understates a panel by an order of
+  // magnitude — and it fails silently, as a plausible number rather than an
+  // error. Dropping any term that mentions a cache BEFORE matching is what
+  // makes that safe. Relying on "Cached" sitting between the unit and "input"
+  // would work only for the one spelling observed today; "$0.03 / 1M In
+  // (cached)" would sail through, and the CLI has already rewritten this
+  // format once.
+  const terms = spec.split("\u00b7").filter((term) => !/cach/i.test(term));
+  const priced = terms.join(" ");
+  const input = priced.match(/\$([0-9.]+)\s*\/\s*(?:MTok|1M)\s*In(?:put)?\b/i);
+  const output = priced.match(/\$([0-9.]+)\s*\/\s*(?:MTok|1M)\s*Out(?:put)?\b/i);
   if (input) out.inputPrice = Number.parseFloat(input[1]);
   if (output) out.outputPrice = Number.parseFloat(output[1]);
   return out;

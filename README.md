@@ -522,7 +522,7 @@ collection, credential pre-flight, temp-file handling and rescue snapshotting ar
 shared lineage; the panel, the model roster, and the permission model are
 specific to Devin.
 
-Running all three on a genuinely risky change gives you four labs' opinions.
+Running all three on a genuinely risky change gives you five labs' opinions.
 Reconcile them yourself — never ask one tool to produce another's.
 
 ## Tests

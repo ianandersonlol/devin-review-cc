@@ -430,7 +430,12 @@ async function commandReview(options) {
           ` sandbox=${sandbox ? "on" : "off"}` +
           (isPanel ? ` concurrency=${options.concurrency}` : ""),
       );
-      if (cost && cost.total > 0.05) log(`rough cost estimate: ${describeCost(cost)}`);
+      // Gated on "does this spend anything", not on a dollar threshold. The
+      // old $0.05 floor silently swallowed the estimate for the default
+      // council, which now prices around a cent — so the tool stopped printing
+      // the estimate that three docs promise it prints. A panel of free models
+      // still says nothing, because there is nothing to say.
+      if (cost && cost.total > 0) log(`rough cost estimate: ${describeCost(cost)}`);
     }
 
     if (!isPanel) {
