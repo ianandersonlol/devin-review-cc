@@ -180,7 +180,7 @@ hold findings the map does not list.
 
 **It does not synthesize, and that is deliberate.** A further model asked to
 merge the reviews has no repository access, cannot check any claim, and reliably
-prefers whatever was stated most confidently — it would launder four
+prefers whatever was stated most confidently — it would launder three
 independent signals into one derivative opinion and bury the disagreements,
 which are the most informative thing a panel produces. Reconciliation is your
 job, because you are the one who can read the code:
@@ -359,8 +359,9 @@ blocker and ask rather than adding the flag yourself.
 ## Notes
 
 - Paid models consume Devin usage quota; free models do not. A panel multiplies
-  cost by the number of paid models in it, and three of the four default council
-  members are paid — the script prints a rough estimate before running, and
+  cost by the number of paid models in it, and two of the three default council
+  members are paid — a couple of cents on a normal diff. The script prints a
+  rough estimate before running whenever a paid model is involved, and
   `--dry-run` prints it and stops.
 - Reviews are synchronous and run at their own pace — measured from ~190s to
   past 900s on the same diff, and longer now that a sandboxed reviewer can read

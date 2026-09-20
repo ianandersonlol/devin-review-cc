@@ -330,6 +330,29 @@ test("parseModels reads the current CLI's price spelling, cached input and all",
   assert.equal(models[0].context, 1e6);
 });
 
+test("a cached-input price is never read as the input price, whatever the word order", () => {
+  // The cheap term is 5-10x below the real one, so misreading it understates a
+  // panel by an order of magnitude — and does it silently, as a plausible
+  // number. Both the observed spelling and a hypothetical one that puts the
+  // cached term FIRST must be rejected; only the second is a real test of the
+  // filter, since the first is also blocked by word order alone.
+  const observed = parseModels(
+    "GLM-5.3 Flash (glm-5.3-flash)\n" +
+      "  glm-5-3-flash-max   GLM-5.3 Flash Max  " +
+      "[1M context, $0.15 / 1M Input \u00b7 $0.03 / 1M Cached input \u00b7 $0.5 / 1M Output]\n",
+  ).models[0];
+  assert.equal(observed.inputPrice, 0.15);
+  assert.equal(observed.outputPrice, 0.5);
+
+  const cachedFirst = parseModels(
+    "Hypothetical (hypothetical)\n" +
+      "  hypo-1   Hypo  " +
+      "[1M context, $0.03 / 1M In (cached) \u00b7 $0.15 / 1M In \u00b7 $0.5 / 1M Out]\n",
+  ).models[0];
+  assert.equal(cachedFirst.inputPrice, 0.15, "the cached term must not win by coming first");
+  assert.equal(cachedFirst.outputPrice, 0.5);
+});
+
 test("parseModels handles a raw token count without a K/M suffix", () => {
   const kimi = parseModels(SAMPLE).models.find((m) => m.id === "kimi-k3-high");
   assert.equal(kimi.context, 1048576);
