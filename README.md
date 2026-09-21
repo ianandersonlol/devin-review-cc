@@ -340,10 +340,20 @@ completes normally and its entire final message is two sentences of
 mid-investigation narration — no findings, no verdict. That used to be rendered
 verbatim under a "Reviewer:" heading, presenting zero review content as a
 review. It is now classified `empty_report` and retried with a note demanding
-the report as the final message. The bar is deliberately conservative: only
-*short* output with no verdict word, no severity word, no `file:line` citation
-and no mention of a finding is reclassified, so a genuine prose review is still
-printed rather than discarded.
+the report as the final message.
+
+The test is how the output **ends**, not how long it is. Devin's export
+concatenates the assistant's intermediate messages, so a reviewer killed
+mid-investigation emits several short fragments glued together — one measured
+run reached 641 characters that way and sailed past an earlier length ceiling.
+Output is reclassified when its closing lines announce an action it never
+performed ("Now let me check…") and it states no verdict or conclusion there;
+length and incidental `file:line` citations no longer protect it, because
+narration cites files constantly. A verdict word anywhere still marks it a
+review, so a genuine prose review is printed rather than discarded. When the
+transcript also recorded a denied tool call, that is reported instead as
+`blocked_tool`, naming the command — the denial is the cause, and the retry
+needs to be told which one.
 
 **When any model fails, the work dir is kept** and its path printed — the
 request as sent, the permission config, and every attempt's transcript where

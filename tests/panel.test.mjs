@@ -297,7 +297,7 @@ test("estimateCost declines to invent a number without a roster", () => {
 
 // ── narration is not a review ────────────────────────────────────────────────
 
-import { isEmptyNarration } from "../skills/devin-review/scripts/lib/panel.mjs";
+import { endsMidInvestigation, isEmptyNarration } from "../skills/devin-review/scripts/lib/panel.mjs";
 
 test("short mid-investigation narration is a retryable empty_report, not a review", () => {
   // The observed failure: kimi-k3-high completed in 242s and its entire final
@@ -388,6 +388,43 @@ test("the real concatenated-narration failure is caught and its denial named", (
   assert.equal(denied.className, "blocked_tool");
   assert.equal(denied.retryable, true);
   assert.match(denied.reason, /devin --version/);
+});
+
+test("an incidental veto word mid-narration does not rescue an unfinished run", () => {
+  // The under-catch a panel reviewer found in the first version of this fix:
+  // the unfinished signal was read from the tail but the vetoes from the WHOLE
+  // text, so any fragment saying "the risk is low" or "no bug there" re-admitted
+  // the exact failure class. The 641-char case that motivated the fix dodged
+  // those words by vocabulary luck — it said "no hardcoded 4 there".
+  for (const blob of [
+    "Now let me check the cache path. The risk here is low. ".repeat(12) +
+      "Let me verify the cache invalidation next.",
+    "Now let me check the parser. So no bug there. ".repeat(14) +
+      "Now let me check the retry path.",
+    "Reading the callers now. This file looks fine. ".repeat(14) +
+      "I'll examine the migration next.",
+  ]) {
+    assert.ok(blob.length > 500, "must exceed the old character ceiling");
+    assert.equal(endsMidInvestigation(blob, "defect"), true, `missed: ${blob.slice(-60)}`);
+    const result = interpret(raw({ stdout: blob }), "/repo");
+    assert.equal(result.ok, false);
+    assert.equal(result.className, "empty_report");
+  }
+});
+
+test("a conclusion in the TAIL still marks the output a review", () => {
+  // The other side of the same boundary: scoping the vetoes to the tail must
+  // not start discarding reviews that actually concluded.
+  const concluded =
+    "Now let me check the cache path. ".repeat(14) + "No issues found; the invalidation is correct.";
+  assert.equal(endsMidInvestigation(concluded, "defect"), false);
+  assert.equal(interpret(raw({ stdout: concluded }), "/repo").ok, true);
+
+  // And a verdict anywhere wins, even if it kept talking afterwards.
+  const verdictThenChatter =
+    "Verdict: REVISE — the parser drops the cached term. " +
+    "Now let me check the retry path. ".repeat(14);
+  assert.equal(endsMidInvestigation(verdictThenChatter, "defect"), false);
 });
 
 test("a rescue narrative is never reclassified as an empty report", () => {
