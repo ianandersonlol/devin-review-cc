@@ -23,13 +23,17 @@ import test from "node:test";
 
 import {
   findDevin,
+  MODEL_DEFAULT,
   prepareSessionConfig,
   readOnlyPermissions,
   runDevin,
 } from "../skills/devin-review/scripts/lib/devin.mjs";
 
 const LIVE = process.env.DEVIN_REVIEW_LIVE === "1";
-const MODEL = process.env.DEVIN_REVIEW_LIVE_MODEL ?? "swe-1-7";
+// Tracks the shipped default rather than naming a model: a hardcoded id
+// here goes stale the moment the default moves, and this suite then fails
+// on spawning an unknown model instead of on the property it tests.
+const MODEL = process.env.DEVIN_REVIEW_LIVE_MODEL ?? MODEL_DEFAULT;
 const TIMEOUT_MS = 300000;
 
 const CANARY = "ORIGINAL-CONTENTS-DO-NOT-CHANGE";
