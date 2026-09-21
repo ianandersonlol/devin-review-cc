@@ -416,19 +416,53 @@ export function isEmptyNarration(text, lens) {
  * A real review ends on a verdict, a recommendation or next steps, never on
  * "Now let me check…".
  *
- * Deliberately narrower than isEmptyNarration: a verdict or a stated conclusion
- * ANYWHERE still wins, because a model that reported and then kept talking has
- * still reported.
+ * The vetoes are scoped to that same tail, and getting this wrong re-admits the
+ * whole failure class. An earlier version of this function tested the unfinished
+ * signal on the tail but vetoed on a severity word or a conclusion phrase
+ * appearing ANYWHERE — which is defeated by the very thing it exists to catch,
+ * since narration fragments routinely say "the risk here is low", "no bug
+ * there", "this file looks fine". The 641-character case that motivated all
+ * this dodged those words by pure vocabulary luck: it said "no hardcoded 4
+ * there", and "no bug there" would have vetoed it. A conclusion in the TAIL
+ * means the model concluded; one in a middle fragment means it was thinking
+ * out loud on the way past.
+ *
+ * The verdict words stay a whole-text veto, and only them. "REVISE" is not
+ * something a model says in passing — unlike "low" or "no issues", it is an
+ * unambiguous deliverable, so a run that produced one has reported whatever
+ * else it went on to say.
+ *
+ * Scoping the other vetoes to the tail is still not enough, because a tail of
+ * repeated narration contains both signals: "…the risk here is low. Let me
+ * verify the cache invalidation next." So it is ORDER that decides, which is
+ * also the most faithful reading of "how did this output end". The model
+ * announced an action and then said nothing conclusive — whatever it concluded
+ * earlier, it did not conclude last.
  */
 const NARRATION_TAIL_CHARS = 240;
+const SEVERITY_SIGNAL = /\b(critical|high|medium|low)\b/i;
+
+/** Index of the LAST match of `re` in `text`, or -1. */
+function lastMatchIndex(re, text) {
+  const scan = new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`);
+  let index = -1;
+  for (const match of text.matchAll(scan)) index = match.index;
+  return index;
+}
 
 export function endsMidInvestigation(text, lens) {
   const verdicts = VERDICTS[lens];
   if (!verdicts) return false;
   if (verdicts.some((verdict) => new RegExp(`\\b${verdict}\\b`, "i").test(text))) return false;
-  if (/\b(critical|high|medium|low)\b/i.test(text)) return false;
-  if (CONCLUSION_SIGNAL.test(text)) return false;
-  return UNFINISHED_SIGNAL.test(text.slice(-NARRATION_TAIL_CHARS));
+
+  const tail = text.slice(-NARRATION_TAIL_CHARS);
+  const announced = lastMatchIndex(UNFINISHED_SIGNAL, tail);
+  if (announced < 0) return false;
+  const concluded = Math.max(
+    lastMatchIndex(CONCLUSION_SIGNAL, tail),
+    lastMatchIndex(SEVERITY_SIGNAL, tail),
+  );
+  return announced > concluded;
 }
 
 /**

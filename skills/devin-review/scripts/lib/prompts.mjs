@@ -171,9 +171,10 @@ output, no second chance:
    reviewer looking for the CLI's bundled docs ran
    \`ls .../_versions/ && which devin; devin --version\` and lost everything it
    had worked out. If you catch yourself reaching for one of these binaries to
-   confirm a fact, **stop** — see the note on model rosters below, and if the
-   fact is genuinely unobtainable, say so in your report instead of spending
-   your turn on it.
+   confirm a fact, **stop**. If the fact is genuinely unobtainable from the
+   repository, say so plainly in your report instead of spending your turn
+   on it — an unverifiable claim reported as unverifiable is worth far more
+   than a review that never printed.
 
 Do not spawn subagents — they cost you time you need for the review.`;
 
@@ -400,19 +401,31 @@ function rosterSection(roster, models) {
     "that could answer (`devin models list`) is a denied program, and running it",
     "ends your turn with nothing printed.",
     "",
-    "You do not need it. Every model id this run uses was resolved against the",
-    "live roster before this session started — an unknown id aborts the run",
-    "before a reviewer is ever spawned.",
   ];
   if (roster) {
+    // Only claim the check happened when it did. modelExists(null) returns true
+    // for everything, so on an unreadable roster nothing was resolved and no
+    // abort will follow — asserting otherwise would be a lie in the one section
+    // whose whole value is being precise about what was verified.
     lines.push(
+      "",
+      "You do not need it. Every model id this run uses was resolved against the",
+      "live roster before this session started — an unknown id aborts the run",
+      "before a reviewer is ever spawned.",
       "",
       `Roster read at launch: ${roster.models.length} models across ${roster.families.length} families.`,
     );
+    // modelExists accepts a family id or alias as well as a checkpoint id, so
+    // matching only checkpoints would silently drop `--model glm-5.3-flash` —
+    // and omit the list entirely for a run made up of aliases.
     const rows = (models ?? [])
-      .map((id) => roster.models.find((m) => m.id === id))
-      .filter(Boolean)
-      .map((m) => `- \`${m.id}\` — ${m.label}${m.free ? " (free)" : ""}`);
+      .map((id) => {
+        const member = roster.models.find((m) => m.id === id);
+        if (member) return `- \`${member.id}\` — ${member.label}${member.free ? " (free)" : ""}`;
+        const family = roster.families.find((f) => f.id === id || f.aliases?.includes(id));
+        return family ? `- \`${id}\` — family alias for ${family.name}` : null;
+      })
+      .filter(Boolean);
     if (rows.length > 0) lines.push("", "Models in this run, as the roster reports them:", ...rows);
   }
   lines.push(
