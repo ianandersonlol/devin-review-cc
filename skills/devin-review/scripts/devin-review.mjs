@@ -430,12 +430,24 @@ async function commandReview(options) {
           ` sandbox=${sandbox ? "on" : "off"}` +
           (isPanel ? ` concurrency=${options.concurrency}` : ""),
       );
-      // Gated on "does this spend anything", not on a dollar threshold. The
-      // old $0.05 floor silently swallowed the estimate for the default
+      // Gated on "is there anything to disclose", not on a dollar threshold.
+      // The old $0.05 floor silently swallowed the estimate for the default
       // council, which now prices around a cent — so the tool stopped printing
-      // the estimate that three docs promise it prints. A panel of free models
-      // still says nothing, because there is nothing to say.
-      if (cost && cost.total > 0) log(`rough cost estimate: ${describeCost(cost)}`);
+      // the estimate that three docs promise it prints.
+      //
+      // `!cost.complete` is the other half, and the subtler one. A model we
+      // could not price contributes 0 to the total, so gating on the total
+      // alone hides exactly the case the user most needs told about: `--model
+      // opus` is accepted (modelExists resolves family aliases) but priced by
+      // nobody, and a roster-format change would put the WHOLE roster in that
+      // state — silently reviving the bug this gate exists to fix. describeCost
+      // already names the unpriced models; this lets it.
+      //
+      // A panel of models known to be free still says nothing, because there
+      // genuinely is nothing to say.
+      if (cost && (cost.total > 0 || !cost.complete)) {
+        log(`rough cost estimate: ${describeCost(cost)}`);
+      }
     }
 
     if (!isPanel) {
