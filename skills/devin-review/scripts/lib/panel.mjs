@@ -305,8 +305,32 @@ export function interpret(result, repoRoot, { keepLinks = false, lens = "defect"
     // ("Now let me check how uvicorn logs access lines...") has delivered
     // nothing, and rendering that verbatim under a "Reviewer:" heading presents
     // zero review content as a review. That is a failure, and a retryable one.
-    if (isEmptyNarration(review, lens)) {
+    if (isEmptyNarration(review, lens) || endsMidInvestigation(review, lens)) {
       const snippet = review.replace(/\s+/g, " ").slice(0, 160);
+      const quoted = `"${snippet}${review.length > 160 ? "…" : ""}"`;
+
+      // A denied tool call is the CAUSE, when the transcript recorded one, and
+      // naming it changes what the retry is told. This was measured: a reviewer
+      // narrated four sentences, called `devin --version` to locate the bundled
+      // docs, and was killed by the deny list. Because it had already printed
+      // narration, stdout was non-empty — so classifyEmptyOutput, the only
+      // other reader of `denials`, was never reached, and the retry was told
+      // "you ended on narration" instead of "that command ends your turn".
+      // It recovered by luck. Reading denials here is what makes the corrective
+      // note describe the actual failure.
+      if (base.denials.length > 0) {
+        return {
+          ...base,
+          ok: false,
+          review: "",
+          className: "blocked_tool",
+          retryable: true,
+          reason:
+            `the model called a tool this session denies (${describeDenials(base.denials)}), which ` +
+            `ended its turn before it printed a report. What it had said first: ${quoted}`,
+        };
+      }
+
       return {
         ...base,
         ok: false,
@@ -315,7 +339,7 @@ export function interpret(result, repoRoot, { keepLinks = false, lens = "defect"
         retryable: true,
         reason:
           `the model ended its turn with ${review.length} characters of narration instead of a ` +
-          `report: "${snippet}${review.length > 160 ? "…" : ""}"`,
+          `report: ${quoted}`,
       };
     }
     return { ...base, ok: true, review, report: null, format: "unstructured",
@@ -372,6 +396,39 @@ export function isEmptyNarration(text, lens) {
   if (CONCLUSION_SIGNAL.test(text)) return false;
   // Discard ONLY when it positively looks like an interrupted investigation.
   return UNFINISHED_SIGNAL.test(text);
+}
+
+/**
+ * The same judgement, but for output too long for the character ceiling above.
+ *
+ * Measured failure: Devin's export concatenates the assistant's INTERMEDIATE
+ * messages, so a reviewer killed mid-investigation emits several narration
+ * fragments glued end to end — "…old model names.`concurrency` defaults to…" —
+ * with no separator. Each fragment is short; the concatenation ran 641
+ * characters against a 500-character ceiling, so the length guard read "long,
+ * therefore substantive" and the run was presented as a review. The incidental
+ * `args.mjs:58` inside it would have vetoed too, which is why a located finding
+ * cannot be trusted as review-evidence here: narration cites files constantly.
+ *
+ * What does survive concatenation is the TAIL. Whatever the model was doing
+ * when its turn ended is the last thing it said, so an announced-but-unperformed
+ * action there means it never reached a report — however much it said before.
+ * A real review ends on a verdict, a recommendation or next steps, never on
+ * "Now let me check…".
+ *
+ * Deliberately narrower than isEmptyNarration: a verdict or a stated conclusion
+ * ANYWHERE still wins, because a model that reported and then kept talking has
+ * still reported.
+ */
+const NARRATION_TAIL_CHARS = 240;
+
+export function endsMidInvestigation(text, lens) {
+  const verdicts = VERDICTS[lens];
+  if (!verdicts) return false;
+  if (verdicts.some((verdict) => new RegExp(`\\b${verdict}\\b`, "i").test(text))) return false;
+  if (/\b(critical|high|medium|low)\b/i.test(text)) return false;
+  if (CONCLUSION_SIGNAL.test(text)) return false;
+  return UNFINISHED_SIGNAL.test(text.slice(-NARRATION_TAIL_CHARS));
 }
 
 /**
