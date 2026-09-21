@@ -415,6 +415,10 @@ async function commandReview(options) {
       focus: options.focus,
       diff: diff.text,
       sandbox,
+      // So the reviewer never spends its turn — or its life — trying to verify
+      // a server-side roster it cannot reach. See rosterSection in prompts.mjs.
+      roster,
+      models: options.models,
     });
 
     // 0600 on POSIX. On Windows the mode is advisory; the real protection is

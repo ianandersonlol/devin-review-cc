@@ -341,13 +341,53 @@ test("a short clean review without the formal vocabulary is kept, not discarded"
   }
 });
 
-test("long prose without JSON is always kept, whatever it says", () => {
-  // Even long UNFINISHED-sounding prose is kept: length alone is enough signal
-  // that the model did substantial work worth showing.
-  const prose = "Now let me check the logging path and then I will look at the retry. ".repeat(12);
-  const result = interpret(raw({ stdout: prose }), "/repo");
-  assert.equal(result.ok, true);
-  assert.equal(result.format, "unstructured");
+test("long prose is kept when it CONCLUDES, and dropped when it ends mid-investigation", () => {
+  // This reverses an earlier rule that kept any output over 500 characters on
+  // the theory that length proves substantial work. A real run disproved it:
+  // Devin's export concatenates the assistant's intermediate messages, so a
+  // reviewer killed mid-investigation emitted 641 characters of glued-together
+  // narration and was rendered under a "Reviewer:" heading as though it had an
+  // opinion. Length is not the signal; how the output ENDS is.
+  const concluding =
+    "I read the parser and traced every call site of parseSpec across the repo. ".repeat(8) +
+    "No issues found; the cached term is excluded correctly.";
+  const kept = interpret(raw({ stdout: concluding }), "/repo");
+  assert.equal(kept.ok, true, "long prose that states a conclusion is a review");
+  assert.equal(kept.format, "unstructured");
+
+  const unfinished = "Now let me check the logging path and then I will look at the retry. ".repeat(12);
+  const dropped = interpret(raw({ stdout: unfinished }), "/repo");
+  assert.equal(dropped.ok, false, "long prose that ends on an announced action delivered nothing");
+  assert.equal(dropped.className, "empty_report");
+  assert.equal(dropped.retryable, true);
+});
+
+test("the real concatenated-narration failure is caught and its denial named", () => {
+  // Verbatim shape of the observed swe-2-max panel failure: several narration
+  // fragments glued with no separator, an incidental `args.mjs:58` inside, and
+  // a tail announcing an action it never performed.
+  const observed =
+    "Now let me check the callers — panel.mjs for PANEL_DEFAULT usage, the estimate code, " +
+    "and any stale references to old model names.`concurrency` defaults to `PANEL_DEFAULT.length` " +
+    "in args.mjs, so no hardcoded 4 there. Let me check the panel/cost code and the test fixtures " +
+    "more closely, plus look for a recorded sample of real roster output.`concurrency` derives " +
+    "from `PANEL_DEFAULT.length` (args.mjs:58), so no hardcoded 4 there. Now let me check how " +
+    "unknown model IDs are handled at runtime, and whether the claimed roster IDs actually exist.";
+  assert.ok(observed.length > 500, "the fixture must exceed the old character ceiling");
+
+  const plain = interpret(raw({ stdout: observed }), "/repo");
+  assert.equal(plain.ok, false, "concatenated narration is not a review");
+  assert.equal(plain.className, "empty_report");
+
+  // With a denial recorded, the SAME output must name the denied call instead,
+  // so the retry is told what actually ended the turn.
+  const denied = interpret(
+    raw({ stdout: observed, denials: [{ tool: "exec", detail: "devin --version", message: "denied" }] }),
+    "/repo",
+  );
+  assert.equal(denied.className, "blocked_tool");
+  assert.equal(denied.retryable, true);
+  assert.match(denied.reason, /devin --version/);
 });
 
 test("a rescue narrative is never reclassified as an empty report", () => {
